@@ -2,3 +2,5 @@
 data/
 *.session*
 docs.org
+venv/
+__pycache__
