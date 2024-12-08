@@ -27,16 +27,12 @@ async def setup():
     logger.info('Started serving as {}'.format(user.first_name))
     await client.get_dialogs()
 
-    for x in config.RELAY_MAP.split(';'):
+    for x in config.RELAY_MAP.split(','):
         if not x:
-            return
+            continue
 
-        key, values = x.split(':', 1)
-        values = values.split(',')
-        if key == 'default':
-            RELAY_MAP[key] = [int(x) for x in values]
-        else:
-            RELAY_MAP[int(key)] = [int(x) for x in values]
+        key, value = x.split(':', 1)
+        RELAY_MAP[int(key)] = [value.strip()]
             
     logger.info(f"RELAY_MAP: {RELAY_MAP}")
 
@@ -66,42 +62,37 @@ def extract_ca(text):
 @client.on(events.NewMessage)
 async def my_event_handler(event):
     message_link = get_message_link(event)
-    for chat_id, relays in RELAY_MAP.items():
+    for chat_id, channelNames in RELAY_MAP.items():
         if event.chat and event.chat.id == chat_id:
             
-            for relay in relays:
-                logger.info('----------------------------------------------------')
-                logger.info('Sending message from {} to {}'.format(event.chat.id, relay))
+            for channelName in channelNames:
                 contractAddress = extract_ca(event.message.message)
                 is_tradeable = bool(re.search(r"pump\.fun", event.message.message, re.IGNORECASE))
                 
                 subject = config.NATS_SUBJECT
                 message = {
-                    "chat_id": event.chat.id,
+                    "chatId": event.chat.id,
+                    "channelName": channelName,
                     "contractAddress": contractAddress,
                     "isTradeable": is_tradeable,
                     "message": event.message.message,
-                    "message_link": message_link
+                    "messageLink": message_link
                 }
                 await nats_client.publish(subject, json.dumps(message).encode())
                 
                 logger.info(contractAddress)
                 logger.info(event.message.message)
-                # if config.FORWARD:
-                #     await client.forward_messages(relay, event.message)
-                # else:
-                #     await client.send_message(relay, event.message)
             break
     else:
-        for relay in RELAY_MAP.get('default', []):
-            logger.info('Sending message from {} to {}'.format(event.chat.id, relay))
+        for channelName in RELAY_MAP.get('default', []):
+            logger.info('Sending message from {} to {}'.format(event.chat.id, channelName))
             if config.FORWARD:
-                await client.forward_messages(relay, event.message)
+                await client.forward_messages(channelName, event.message)
             else:
                 message_text = event.message.message
                 if message_link:
                     message_text += f"\n\n[Original Message]({message_link})"
-                await client.send_message(relay, message_text, link_preview=False)
+                await client.send_message(channelName, message_text, link_preview=False)
 
 loop = asyncio.get_event_loop()
 loop.run_until_complete(setup())
