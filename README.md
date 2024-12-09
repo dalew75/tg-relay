@@ -63,6 +63,16 @@ $ docker build -t tg-relay .
 $ docker run -e API_ID=XXXX -e API_HASH=XXXX -e SESSION_NAME="/data/session" -v `pwd`/<data:/data> tg-relay
 ```
 
+This app is [Dokku](http://dokku.viewdocs.io/dokku/) ready
+----------------------------------------------------------
+
+1.  Setup storages for persistent storing of sessions.
+2.  Configure environment variables
+3.  Git push to Dokku
+4.  Make sure to scale web to 0 and cmd to 1 to avoid nginx troubles.
+    `dokku ps:scale tg-relay web=0 cmd=1`
+
+
 Python setup instructions
 ------------------------
 
@@ -94,12 +104,3 @@ pm2 desc tg-relay
 pm2 logs tg-relay --lines 3000 | grep '3PhHyAr84WiVLCJYVSojwiAVowhtx397zjrxpHyC2CPK'
 
 ```
-
-This app is [Dokku](http://dokku.viewdocs.io/dokku/) ready
-----------------------------------------------------------
-
-1.  Setup storages for persistent storing of sessions.
-2.  Configure environment variables
-3.  Git push to Dokku
-4.  Make sure to scale web to 0 and cmd to 1 to avoid nginx troubles.
-    `dokku ps:scale tg-relay web=0 cmd=1`
