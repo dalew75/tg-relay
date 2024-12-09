@@ -95,6 +95,7 @@ Run in background using pm2
 ------------------------
 
 ```sh
+sudo apt install npm
 npm i -g pm2
 pm2 start venv/bin/python3 --name tg-relay -- ~/apps/tg-relay/relay.py
 pm2 logs tg-relay
