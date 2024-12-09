@@ -32,7 +32,7 @@ async def setup():
             continue
 
         key, value = x.split(':', 1)
-        RELAY_MAP[int(key)] = [value.strip()]
+        RELAY_MAP[int(key)] = [v.strip() for v in value.split(',')]
             
     logger.info(f"RELAY_MAP: {RELAY_MAP}")
 
