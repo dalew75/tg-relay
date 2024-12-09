@@ -59,8 +59,18 @@ This app is Docker ready
 ------------------------
 
 ```sh
-$ docker build -t tg-relay .
-$ docker run -e API_ID=XXXX -e API_HASH=XXXX -e SESSION_NAME="/data/session" -v `pwd`/<data:/data> tg-relay
+git clone git@github.com:dalew75/tg-relay.git
+cd tg-relay/
+python3 -m venv venv
+source venv/bin/activate
+python -m ensurepip
+python -m pip install -r requirements.txt
+export API_ID=
+export API_HASH=
+python3 listchannels.py 
+export RELAY_MAP=""
+python3 relay.py 
+
 ```
 
 This app is [Dokku](http://dokku.viewdocs.io/dokku/) ready
