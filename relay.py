@@ -71,20 +71,28 @@ async def my_event_handler(event):
                 logger.info('----------------------------------------------------')
                 logger.info('Sending message from {} to {}'.format(event.chat.id, relay))
                 contractAddress = extract_ca(event.message.message)
-                is_tradeable = bool(re.search(r"pump\.fun", event.message.message, re.IGNORECASE))
                 
-                subject = config.NATS_SUBJECT
-                message = {
+                if not contractAddress:
+                    subject = config.NATS_CATCHALL_SUBJECT
+                    message = {
+                    "chat_id": event.chat.id,
+                    "message": event.message.message,
+                    "message_link": message_link
+                    }
+                elif contractAddress:
+                    logger.info(f'Contract Address: {contractAddress}')
+                    subject = config.NATS_SUBJECT
+                    is_tradeable = bool(re.search(r"pump\.fun", event.message.message, re.IGNORECASE))
+                    message = {
                     "chat_id": event.chat.id,
                     "contractAddress": contractAddress,
                     "isTradeable": is_tradeable,
                     "message": event.message.message,
                     "message_link": message_link
-                }
-                await nats_client.publish(subject, json.dumps(message).encode())
+                    }
                 
-                logger.info(contractAddress)
                 logger.info(event.message.message)
+                await nats_client.publish(subject, json.dumps(message).encode())
                 # if config.FORWARD:
                 #     await client.forward_messages(relay, event.message)
                 # else:
@@ -102,5 +110,6 @@ async def my_event_handler(event):
                 await client.send_message(relay, message_text, link_preview=False)
 
 loop = asyncio.get_event_loop()
+
 loop.run_until_complete(setup())
 client.run_until_disconnected()

@@ -1,0 +1,12 @@
+git clone git@github.com:dalew75/tg-relay.git
+ cd tg-relay/
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+python3 listchannels.py 
+nano .env
+export API_ID=
+export API_HASH=
+export RELAY_MAP=""
+python3 relay.py 
+python3 relay.py 
