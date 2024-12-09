@@ -59,6 +59,14 @@ This app is Docker ready
 ------------------------
 
 ```sh
+$ docker build -t tg-relay .
+$ docker run -e API_ID=XXXX -e API_HASH=XXXX -e SESSION_NAME="/data/session" -v `pwd`/<data:/data> tg-relay
+```
+
+Python setup instructions
+------------------------
+
+```sh
 git clone git@github.com:dalew75/tg-relay.git
 cd tg-relay/
 python3 -m venv venv
@@ -70,6 +78,20 @@ export API_HASH=
 python3 listchannels.py 
 export RELAY_MAP=""
 python3 relay.py 
+
+```
+
+Run in background using pm2
+------------------------
+
+```sh
+npm i -g pm2
+pm2 start venv/bin/python3 --name tg-relay -- ~/apps/tg-relay/relay.py
+pm2 logs tg-relay
+pm2 stop tg-relay
+pm2 restart tg-relay
+pm2 desc tg-relay
+pm2 logs tg-relay --lines 3000 | grep '3PhHyAr84WiVLCJYVSojwiAVowhtx397zjrxpHyC2CPK'
 
 ```
 
