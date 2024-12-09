@@ -71,3 +71,19 @@ This app is [Dokku](http://dokku.viewdocs.io/dokku/) ready
 3.  Git push to Dokku
 4.  Make sure to scale web to 0 and cmd to 1 to avoid nginx troubles.
     `dokku ps:scale tg-relay web=0 cmd=1`
+
+Python setup instructions
+------------------------
+
+```sh
+git clone git@github.com:dalew75/tg-relay.git
+cd tg-relay/
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+export API_ID=
+export API_HASH=
+python3 listchannels.py 
+export RELAY_MAP=""
+python3 relay.py 
+```
