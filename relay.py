@@ -66,10 +66,13 @@ async def my_event_handler(event):
         if event.chat and event.chat.id == chat_id:
             
             for channelName in channelNames:
+                logger.info(f'Channel: {channelName}')
+                logger.info(f'Message: {event.message.message}')
                 contractAddress = extract_ca(event.message.message)
                 is_tradeable = bool(re.search(r"pump\.fun", event.message.message, re.IGNORECASE))
                 
                 subject = config.NATS_SUBJECT
+                logger.info(f'NATS subject: {subject}')
                 message = {
                     "chatId": event.chat.id,
                     "channelName": channelName,
