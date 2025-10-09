@@ -79,7 +79,9 @@ async def my_event_handler(event):
                     "contractAddress": contractAddress,
                     "isTradeable": is_tradeable,
                     "message": event.message.message,
-                    "messageLink": message_link
+                    "messageLink": message_link,
+                    "userId": event.message.from_id.user_id if event.message.from_id else None,
+                    "username": event.message.sender.username if event.message.sender else None
                 }
                 await nats_client.publish(subject, json.dumps(message).encode())
                 
