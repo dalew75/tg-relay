@@ -61,6 +61,25 @@ def extract_ca(text):
 
 @client.on(events.NewMessage)
 async def my_event_handler(event):
+    # Debug logging to see what chats are being processed
+    # Keep track of which chats we've already logged info for
+    if not hasattr(my_event_handler, 'logged_chats'):
+        my_event_handler.logged_chats = set()
+
+    # Only log chat info the first time we see this chat
+    if event.chat and event.chat.id not in my_event_handler.logged_chats:
+        logger.info(
+            f"New message received from previously unseen chat: "
+            f"Chat ID: {event.chat.id if event.chat else 'None'}, "
+            f"Chat Type: {type(event.chat).__name__ if event.chat else 'None'}, "
+            f"Chat Title: {event.chat.title if event.chat and hasattr(event.chat, 'title') else 'None'}, "
+            f"Is Channel: {event.is_channel if hasattr(event, 'is_channel') else 'Unknown'}, "
+            f"Is Group: {event.is_group if hasattr(event, 'is_group') else 'Unknown'}, "
+            f"Is Private: {event.is_private if hasattr(event, 'is_private') else 'Unknown'}, "
+            f"RELAY_MAP keys: {list(RELAY_MAP.keys())}"
+        )
+        my_event_handler.logged_chats.add(event.chat.id)
+    
     message_link = get_message_link(event)
     for chat_id, channelNames in RELAY_MAP.items():
         if event.chat and event.chat.id == chat_id:
@@ -76,19 +95,23 @@ async def my_event_handler(event):
                 message = {
                     "chatId": event.chat.id,
                     "channelName": channelName,
-                    "contractAddress": contractAddress,
-                    "isTradeable": is_tradeable,
                     "message": event.message.message,
                     "messageLink": message_link,
                     "userId": event.message.from_id.user_id if event.message.from_id else None,
                     "username": event.message.sender.username if event.message.sender else None
                 }
+                if contractAddress:
+                    message["contractAddress"] = contractAddress
+                if is_tradeable:
+                    message["isTradeable"] = is_tradeable
                 await nats_client.publish(subject, json.dumps(message).encode())
                 
                 logger.info(contractAddress)
                 logger.info(event.message.message)
             break
     else:
+        # logger.info(f"Message from chat ID {event.chat.id if event.chat else 'None'} not found in RELAY_MAP")
+        # logger.info(f"Available RELAY_MAP chat IDs: {list(RELAY_MAP.keys())}")
         for channelName in RELAY_MAP.get('default', []):
             logger.info('Sending message from {} to {}'.format(event.chat.id, channelName))
             if config.FORWARD:
