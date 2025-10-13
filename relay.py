@@ -37,12 +37,27 @@ async def setup():
     logger.info(f"RELAY_MAP: {RELAY_MAP}")
 
 
+def get_real_chat_id(chat):
+    """
+    Get the real chat ID that Telegram uses internally.
+    Uses Telethon's get_peer_id utility to get the correct ID.
+    """
+    from telethon.utils import get_peer_id
+    
+    # get_peer_id returns the actual ID that Telegram uses
+    # For supergroups/channels: negative with -100 prefix
+    # For regular groups: negative
+    # For users: positive
+    return get_peer_id(chat)
+
 def get_message_link(event):
     if event.is_channel:
         if event.chat.username:
             return f"https://t.me/{event.chat.username}/{event.message.id}"
         else:
-            return f"https://t.me/c/{event.chat.id}/{event.message.id}"
+            # For private channels, use the unmarked ID (without -100 prefix)
+            chat_id = str(event.chat.id).replace('-100', '')
+            return f"https://t.me/c/{chat_id}/{event.message.id}"
     else:
         return None
     
@@ -68,19 +83,40 @@ async def my_event_handler(event):
 
     # Only log chat info the first time we see this chat
     if event.chat and event.chat.id not in my_event_handler.logged_chats:
+        # Get multiple forms of the chat ID for debugging
+        raw_chat_id = event.chat.id
+        
+        # Import Telethon utilities for proper ID handling
+        from telethon.utils import get_peer_id, resolve_id
+        from telethon.tl.types import PeerChannel, PeerChat, PeerUser
+        
+        # Get the peer ID (this is the actual ID Telegram uses)
+        peer_id = get_peer_id(event.chat)
+        
+        # Try to get the entity ID
+        entity_id = event.chat_id if hasattr(event, 'chat_id') else None
+        
         logger.info(
             f"New message received from previously unseen chat: "
-            f"Chat ID: {event.chat.id if event.chat else 'None'}, "
-            f"Chat Type: {type(event.chat).__name__ if event.chat else 'None'}, "
-            f"Chat Title: {event.chat.title if event.chat and hasattr(event.chat, 'title') else 'None'}, "
-            f"Is Channel: {event.is_channel if hasattr(event, 'is_channel') else 'Unknown'}, "
-            f"Is Group: {event.is_group if hasattr(event, 'is_group') else 'Unknown'}, "
-            f"Is Private: {event.is_private if hasattr(event, 'is_private') else 'Unknown'}, "
-            f"RELAY_MAP keys: {list(RELAY_MAP.keys())}"
+            f"\n  Chat ID (raw event.chat.id): {raw_chat_id}"
+            f"\n  Chat ID (get_peer_id): {peer_id}"
+            f"\n  Chat ID (event.chat_id): {entity_id}"
+            f"\n  Chat Type: {type(event.chat).__name__}"
+            f"\n  Chat Title: {event.chat.title if hasattr(event.chat, 'title') else 'None'}"
+            f"\n  Is Channel: {event.is_channel}"
+            f"\n  Is Group: {event.is_group}"
+            f"\n  Is Private: {event.is_private}"
+            f"\n  Has megagroup attr: {hasattr(event.chat, 'megagroup')}"
+            f"\n  Megagroup: {event.chat.megagroup if hasattr(event.chat, 'megagroup') else 'N/A'}"
+            f"\n  RELAY_MAP keys: {list(RELAY_MAP.keys())}"
         )
         my_event_handler.logged_chats.add(event.chat.id)
     
     message_link = get_message_link(event)
+    
+    # Get the real chat ID (with proper negative formatting for groups/channels)
+    real_chat_id = get_real_chat_id(event.chat) if event.chat else None
+    
     for chat_id, channelNames in RELAY_MAP.items():
         if event.chat and event.chat.id == chat_id:
             
@@ -94,6 +130,7 @@ async def my_event_handler(event):
                 logger.info(f'NATS subject: {subject}')
                 message = {
                     "chatId": event.chat.id,
+                    "realChatId": real_chat_id,  # Use the real chat ID
                     "channelName": channelName,
                     "message": event.message.message,
                     "messageLink": message_link,
