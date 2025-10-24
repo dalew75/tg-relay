@@ -4,3 +4,5 @@ pyasn1==0.6.0
 python-decouple==3.8
 rsa==4.9
 Telethon==1.36.0
+youtube-transcript-api>=0.6.0
+requests
