@@ -105,7 +105,22 @@ async def process_youtube_transcript(youtube_link):
         with open(file_name, 'w', encoding='utf-8') as file:
             file.write(transcript_text)
         logger.info(f"Transcript saved to {file_name}")
-        
+        # Publish the transcript to the 'youtube-summaries' NATS subject
+        if nats_client:
+            import time
+            summary_data = {
+                "youtubeLink": youtube_link,
+                "timestamp": int(time.time()),
+                "transcript": transcript_text
+            }
+            try:
+                await nats_client.publish(
+                    "youtube-summaries", 
+                    json.dumps(summary_data).encode('utf-8')
+                )
+                logger.info(f"Published transcript to 'youtube-summaries' for {youtube_link}")
+            except Exception as e:
+                logger.error(f"Failed to publish transcript to NATS: {e}")
     except Exception as e:
         logger.error(f"Error saving transcript to file: {e}")
 
