@@ -129,7 +129,7 @@ async def log_unseen_source(event, source_id):
     hint = (
         ""
         if source_id in allowlist
-        else " — to relay, reply /allow  (or send: /allow <id> [label])"
+        else f" — to relay, reply /allow  (or send: /allow {source_id} {name!r})"
     )
     logger.info(
         f"New source ({kind}) id={source_id} chat_id={event.chat_id} "
