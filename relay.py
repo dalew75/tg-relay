@@ -96,10 +96,13 @@ async def setup():
             config.MGMT_GROUP
         )
         logger.info(
-            "MGMT_GROUP: source_id=%s title=%r",
+            "MGMT_GROUP: source_id=%s title=%r notify=%s",
             mgmt_group_id,
             getattr(mgmt_group_entity, 'title', None),
+            config.MGMT_NOTIFY,
         )
+    elif config.MGMT_NOTIFY:
+        logger.warning("MGMT_NOTIFY is enabled but MGMT_GROUP is not set")
 
     logger.info(f"RELAY_MAP: {RELAY_MAP}")
     logger.info(f"Allowlist ({len(allowlist)} sources): {format_listing(allowlist)}")
@@ -118,18 +121,30 @@ def get_real_chat_id(chat):
     # For users: positive
     return get_peer_id(chat)
 
-def get_message_link(event):
-    if event.is_channel:
-        if event.chat is None:
-            return None
-        if event.chat.username:
-            return f"https://t.me/{event.chat.username}/{event.message.id}"
-        else:
-            # For private channels, use the unmarked ID (without -100 prefix)
-            chat_id = str(event.chat.id).replace('-100', '')
-            return f"https://t.me/c/{chat_id}/{event.message.id}"
-    else:
+def get_chat_link(event):
+    if event.chat is None:
         return None
+    username = getattr(event.chat, 'username', None)
+    if username:
+        return f"https://t.me/{username}"
+    if event.is_channel or event.is_group:
+        chat_id = str(event.chat.id).replace('-100', '')
+        return f"https://t.me/c/{chat_id}"
+    if event.is_private:
+        return f"tg://user?id={event.chat_id}"
+    return None
+
+
+def get_message_link(event):
+    if event.chat is None:
+        return None
+    username = getattr(event.chat, 'username', None)
+    if username:
+        return f"https://t.me/{username}/{event.message.id}"
+    if event.is_channel or event.is_group:
+        chat_id = str(event.chat.id).replace('-100', '')
+        return f"https://t.me/c/{chat_id}/{event.message.id}"
+    return None
     
 def extract_ca(text):
     # Regex pattern to match the alphanumeric string after "CA:"
@@ -216,12 +231,27 @@ def message_preview(event):
     return "[empty]"
 
 
+async def mark_pending_source(event, source_id):
+    name = await safe_name(event)
+    kind = (
+        "user"
+        if event.is_private
+        else ("chat" if event.is_group else "channel")
+    )
+    mark_pending(allowlist, source_id, name, kind)
+    await save_allowlist()
+    logger.info("Marked source %s (%s) as pending", source_id, name)
+    return name, kind
+
+
 async def notify_mgmt_group(event, source_id):
-    if mgmt_group_entity is None or source_id == mgmt_group_id:
-        return
-    entry = allowlist.get(source_id)
-    if entry is not None:
-        return
+    # TODO(low): Reduce MGMT_GROUP flooding risk — rate-limit/digest notifications,
+    # backoff on Telegram send failures, and cap pending posts per time window.
+    if mgmt_group_entity is None or not config.MGMT_NOTIFY:
+        return False
+    if source_id == mgmt_group_id:
+        return False
+
     name = await safe_name(event)
     kind = (
         "user"
@@ -234,23 +264,43 @@ async def notify_mgmt_group(event, source_id):
         source_id=source_id,
         chat_id=event.chat_id,
         message_preview=message_preview(event),
+        chat_link=get_chat_link(event),
         message_link=get_message_link(event),
     )
     try:
-        await client.send_message(mgmt_group_entity, text, link_preview=False)
-        mark_pending(allowlist, source_id, name, kind)
-        await save_allowlist()
+        await client.send_message(
+            mgmt_group_entity,
+            text,
+            link_preview=False,
+            parse_mode='html',
+        )
         logger.info(
             "Posted pending notification for %s (%s) to MGMT_GROUP",
             source_id,
             name,
         )
+        return True
     except Exception as error:
         logger.error(
             "Unable to notify MGMT_GROUP %s: %s",
             mgmt_group_id,
             error,
         )
+        return False
+
+
+async def handle_new_pending_source(event, source_id):
+    entry = allowlist.get(source_id)
+    if entry is not None:
+        return
+
+    notified = await notify_mgmt_group(event, source_id)
+    if not notified and config.MGMT_NOTIFY:
+        logger.warning(
+            "MGMT_GROUP notify failed for %s; marking pending anyway to avoid retries",
+            source_id,
+        )
+    await mark_pending_source(event, source_id)
 
 
 def sources_to_persist():
@@ -440,7 +490,7 @@ async def my_event_handler(event):
     if is_pending(entry):
         return
 
-    await notify_mgmt_group(event, source_id)
+    await handle_new_pending_source(event, source_id)
 
 loop = asyncio.get_event_loop()
 loop.run_until_complete(setup())

@@ -114,6 +114,21 @@ def parse_command(text: str) -> tuple[str, list[str]] | None:
     return tokens[0].lower(), tokens[1:]
 
 
+def escape_html(text: str) -> str:
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
+def html_link(url: str | None, label: str) -> str:
+    safe_label = escape_html(label)
+    if not url:
+        return safe_label
+    return f'<a href="{escape_html(url)}">{safe_label}</a>'
+
+
 def format_listing(sources: dict[int, dict]) -> str:
     return "\n".join(
         f"{source_id}  status={entry.get('status', STATUS_ALLOWED)}  "
@@ -134,39 +149,51 @@ def format_pending_notification(
     source_id: int,
     chat_id: int,
     message_preview: str,
+    chat_link: str | None,
     message_link: str | None,
 ) -> str:
+    name_html = html_link(chat_link, name)
+    source_html = html_link(message_link, str(source_id))
+    allow_cmd = f"/allow {source_id} {name}"
     lines = [
         _PENDING_HEADER,
-        f"kind: {kind}",
-        f"name: {name}",
-        f"source_id: {source_id}",
+        f"kind: {escape_html(kind)}",
+        f"name: {name_html}",
+        f"source_id: {source_html}",
         f"chat_id: {chat_id}",
         "",
         "--- message ---",
-        message_preview or "[empty]",
+        escape_html(message_preview or "[empty]"),
+        "",
+        escape_html(allow_cmd),
+        f"/disallow {source_id}",
+        f"/reset {source_id}",
     ]
-    if message_link:
-        lines.extend(["", f"link: {message_link}"])
-    lines.extend(
-        [
-            "",
-            "Reply /allow [label] to approve, /disallow to ignore, or /reset to clear.",
-        ]
-    )
     return "\n".join(lines)
 
 
 def parse_pending_notification(text: str) -> dict | None:
     if not text or _PENDING_HEADER not in text:
         return None
-    source_match = re.search(r"^source_id:\s*(\d+)", text, re.MULTILINE)
+    source_match = re.search(
+        r"^source_id:\s*(?:<a href=\"[^\"]+\">(\d+)</a>|(\d+))",
+        text,
+        re.MULTILINE,
+    )
     if not source_match:
         return None
     kind_match = re.search(r"^kind:\s*(\S+)", text, re.MULTILINE)
-    name_match = re.search(r"^name:\s*(.+)", text, re.MULTILINE)
+    name_match = re.search(
+        r"^name:\s*(?:<a href=\"[^\"]+\">([^<]+)</a>|(.+))",
+        text,
+        re.MULTILINE,
+    )
     return {
-        "source_id": int(source_match.group(1)),
+        "source_id": int(source_match.group(1) or source_match.group(2)),
         "kind": kind_match.group(1) if kind_match else "source",
-        "name": name_match.group(1).strip() if name_match else None,
+        "name": (
+            (name_match.group(1) or name_match.group(2)).strip()
+            if name_match
+            else None
+        ),
     }

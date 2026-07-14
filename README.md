@@ -37,7 +37,8 @@ Common optional variables:
 | `NATS_USER` | *(empty)* | NATS username |
 | `NATS_PASS` | *(empty)* | NATS password |
 | `ALLOWLIST_PATH` | `data/allowlist.json` | Persisted runtime allowlist |
-| `MGMT_GROUP` | *(empty)* | `source_id:label` for the management group that receives pending-approval notifications |
+| `MGMT_GROUP` | *(empty)* | `source_id:label` for the management group used when `MGMT_NOTIFY=True` |
+| `MGMT_NOTIFY` | `False` | Post pending-approval notifications to `MGMT_GROUP` (off by default) |
 | `FORWARD` | `True` | Legacy forwarding for unmapped messages via `default` destinations |
 
 Why do I have to register an App?
@@ -82,14 +83,17 @@ changes to `ALLOWLIST_PATH`. Each entry has a `status`:
 Commands are sent **as the relay account** (outgoing messages from the logged-in
 user). They are not bot commands and are not sent by people DMing the account.
 
-When `MGMT_GROUP` is set (for example `1888203970:BotDevGroup`), the **first**
-message from a new source is posted once to that group with source metadata and
-a message preview. Reply to that notification with `/allow`, `/disallow`, or
-`/reset`.
+When `MGMT_NOTIFY=True` and `MGMT_GROUP` is set (for example
+`1888203970:BotDevGroup`), the **first** message from a new source is posted once
+to that group with source metadata and a message preview. By default
+`MGMT_NOTIFY=False`; new sources are marked `pending` in `ALLOWLIST_PATH`
+silently so you can edit `data/allowlist.json` manually (`allowed`, `denied`, or
+`pending`).
 
 `MGMT_GROUP` is separate from `RELAY_MAP`: listing a group in `RELAY_MAP` only
 allowlists it as a relay *source*. To receive pending-approval notifications
-*in* BotDevGroup, you must also set `MGMT_GROUP=1888203970:BotDevGroup`.
+*in* BotDevGroup, set both `MGMT_GROUP=1888203970:BotDevGroup` and
+`MGMT_NOTIFY=True`.
 
 ### `/allow` — start relaying a source
 

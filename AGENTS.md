@@ -16,7 +16,7 @@ This is not a Telegram bot. Changes that touch runtime behavior usually need Tel
   5. `@client.on(events.NewMessage)` registers `my_event_handler(event)`.
   6. Outgoing messages from the relay account are checked for `/allow`, `/remove`, `/disallow`, `/reset`, and `/list` via `allowlist.parse_command()` and `handle_command()`.
   7. For `allowed` sources, the handler publishes JSON to `config.NATS_SUBJECT`. Payload fields include `chatId`, `realChatId`, `channelName`, `messageId`, `message`, `messageLink`, `userId`, and `username`; `contractAddress` and `isTradeable` are conditional.
-  8. Unknown sources get one pending notification in `MGMT_GROUP`, then are stored as `status=pending` in `ALLOWLIST_PATH`.
+  8. Unknown sources are marked `status=pending` in `ALLOWLIST_PATH`. Optional `MGMT_NOTIFY` posts one notification per new source to `MGMT_GROUP` (disabled by default).
   9. `denied` sources are silently ignored; `pending` sources are not relayed or re-notified.
   10. Runtime allowlist changes are persisted to `ALLOWLIST_PATH` through `save_allowlist()`.
   11. The bottom of the file runs `loop.run_until_complete(setup())` and `client.run_until_disconnected()` without an `if __name__ == "__main__"` guard.
@@ -106,14 +106,15 @@ staging future commits; do not commit runtime changes with stale documentation.
 
 - `config.py` — authoritative config surface:
   - Required: `API_ID`, `API_HASH`, `RELAY_MAP`, `NATS_SERVER`.
-  - Defaults: `FORWARD=True`, `SESSION_NAME='session'`, `NATS_SUBJECT='telegram-messages'`, `NATS_USER=''`, `NATS_PASS=''`, `ALLOWLIST_PATH='data/allowlist.json'`, `MGMT_GROUP=''`.
+  - Defaults: `FORWARD=True`, `SESSION_NAME='session'`, `NATS_SUBJECT='telegram-messages'`, `NATS_USER=''`, `NATS_PASS=''`, `ALLOWLIST_PATH='data/allowlist.json'`, `MGMT_GROUP=''`, `MGMT_NOTIFY=False`.
 - `relay.py` — key functions:
   - `setup()` connects NATS, loads allowlist, and seeds `RELAY_MAP` into allowlist.
   - `get_real_chat_id(chat)` normalizes Telethon peer IDs.
   - `get_message_link(event)` builds public or `/c/` Telegram links.
   - `extract_ca(text)` parses `CA:` alphanumeric tokens.
   - `log_unseen_source(event, source_id)` logs first contact and `/allow` hints for private DMs.
-  - `notify_mgmt_group(event, source_id)` posts pending-approval notifications to `MGMT_GROUP`.
+  - `notify_mgmt_group(event, source_id)` optionally posts pending-approval notifications when `MGMT_NOTIFY=True`.
+  - `handle_new_pending_source(event, source_id)` marks unknown sources `pending` and persists to `ALLOWLIST_PATH`.
   - `handle_command(event, parsed)` implements `/allow`, `/remove`, `/disallow`, `/reset`, `/list`.
   - `my_event_handler(event)` handles inbound Telegram messages and publishes NATS payloads for allowlisted sources.
 - `allowlist.py` — key functions:
@@ -164,3 +165,7 @@ python -m py_compile relay.py allowlist.py youtube-transcripts.py config.py list
   - For commands: verify `/list` output and `/remove` stops publishing without affecting `RELAY_MAP`-seeded entries until env changes.
 - Behavioral verification for transcript changes requires a NATS message on `youtube-transcript` with `youtubeLink`, network access to YouTube/transcript endpoints, and confirmation of both local transcript file output and `youtube-summaries` publish.
 - Because `relay.py` and `listchannels.py` execute Telethon startup at import/top level, future unit tests should isolate those side effects before importing modules directly.
+
+## Future work (low priority)
+
+- **MGMT_GROUP notification flooding:** `MGMT_NOTIFY` defaults off because failed Telegram posts previously retried on every message from the same unknown source. A future fix should add per-source rate limits, digest/batch pending notifications, exponential backoff on send failures, and clearer operator controls before re-enabling broadcast notify by default.
