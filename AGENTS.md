@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-`tg-relay` is a small Python Telegram user-client relay. It authenticates with Telethon as a normal Telegram account, watches configured chats, and publishes selected message metadata to NATS. A separate root script can consume YouTube transcript requests from NATS, write transcript text files, and publish transcript summaries.
+`tg-relay` is a small Python Telegram user-client relay. It authenticates with Telethon as a normal Telegram account, watches allowlisted chats (channels, groups, and private DMs), and publishes selected message metadata to NATS. Sources are seeded from `RELAY_MAP` at startup and can be changed at runtime via `/allow`, `/remove`, and `/list`. A separate root script can consume YouTube transcript requests from NATS, write transcript text files, and publish transcript summaries.
 
 This is not a Telegram bot. Changes that touch runtime behavior usually need Telegram API credentials, a persisted Telethon session, and a reachable NATS server to verify end to end.
 
@@ -11,30 +11,37 @@ This is not a Telegram bot. Changes that touch runtime behavior usually need Tel
 - `relay.py` is the main process and Docker entrypoint.
   1. Imports `config.py`, constructs `TelegramClient(config.SESSION_NAME, config.API_ID, config.API_HASH)`, and calls `client.start()` at module import/startup.
   2. `setup()` connects a module-global `nats_client` to `config.NATS_SERVER`, optionally using `NATS_USER`/`NATS_PASS`.
-  3. `setup()` parses `config.RELAY_MAP` into the module-global `RELAY_MAP`.
-  4. `@client.on(events.NewMessage)` registers `my_event_handler(event)`.
-  5. For mapped chats, the handler publishes JSON to `config.NATS_SUBJECT` (default `telegram-messages`). Payload fields include `chatId`, `realChatId`, `channelName`, `messageId`, `message`, `messageLink`, `userId`, and `username`; `contractAddress` and `isTradeable` are conditional.
-  6. The bottom of the file runs `loop.run_until_complete(setup())` and `client.run_until_disconnected()` without an `if __name__ == "__main__"` guard.
+  3. `setup()` loads the persisted allowlist from `config.ALLOWLIST_PATH` via `allowlist.load_store()`.
+  4. `setup()` parses `config.RELAY_MAP` into the module-global `RELAY_MAP` and seeds any missing keys into the in-memory allowlist with `kind="env"`.
+  5. `@client.on(events.NewMessage)` registers `my_event_handler(event)`.
+  6. Outgoing messages from the relay account are checked for `/allow`, `/remove`, and `/list` via `allowlist.parse_command()` and `handle_command()`.
+  7. For allowlisted sources (channels, groups, or private users), the handler publishes JSON to `config.NATS_SUBJECT` (default `telegram-messages`). Payload fields include `chatId`, `realChatId`, `channelName`, `messageId`, `message`, `messageLink`, `userId`, and `username`; `contractAddress` and `isTradeable` are conditional.
+  8. First-seen sources are logged once with allowlist status; private DMs log a hint to reply `/allow`.
+  9. Runtime allowlist changes (not `RELAY_MAP`-seeded) are persisted to `ALLOWLIST_PATH` through `save_runtime_sources()`.
+  10. The bottom of the file runs `loop.run_until_complete(setup())` and `client.run_until_disconnected()` without an `if __name__ == "__main__"` guard.
+- `allowlist.py` holds JSON load/save, source add/remove, `source_id_from_chat_id()` (via Telethon `resolve_id`), command parsing, and listing format helpers.
 - `youtube-transcripts.py` is a separate NATS worker, not launched by the Dockerfile.
   1. Subscribes to literal NATS subject `youtube-transcript`.
   2. Expects JSON with `youtubeLink`; optional `chatId` is propagated.
   3. Extracts a YouTube video ID, fetches the page title, selects an English generated transcript, writes `<video_id>_<sanitized title>.txt` in the current working directory, and publishes JSON to literal subject `youtube-summaries`.
-- `listchannels.py` is an authenticated Telethon helper that prints `Channel | ID` for dialogs to help build `RELAY_MAP`.
+- `listchannels.py` is an authenticated Telethon helper that prints `Channel | ID` for dialogs to help build `RELAY_MAP` or `/allow` targets.
 - `config.py` is the eager environment schema for all scripts. Because all runtime scripts import it, missing required variables can fail even helper commands.
 
-Known drift to preserve awareness of when editing:
-- `README.md` documents `RELAY_MAP=SOURCE:DST1,DST2;SOURCE2:DST3`, but current `relay.py` splits top-level entries on commas and parses keys as `int`, so documented multi-destination/semicolon syntax is incompatible with the implementation.
-- README describes forwarding/re-sending between Telegram chats, while the current mapped-chat path publishes to NATS. The forwarding branch uses `RELAY_MAP.get('default', [])`, but setup cannot currently create a string `default` key because it casts keys to `int`.
+Known behavior notes when editing:
+- `RELAY_MAP` is comma-separated `source_id:label` entries. Commas cannot safely separate multiple destination labels within one entry because the same delimiter splits top-level entries; use `/allow` or `allowlist.json` for multi-destination sources.
+- README previously documented semicolon-separated multi-relay syntax and chat-to-chat forwarding as the primary path; runtime NATS publishing is driven by the allowlist. Legacy forwarding still exists for `RELAY_MAP.get('default', [])`, but setup cannot create a string `default` key because it casts keys to `int`.
+- `/allow`, `/remove`, and `/list` only run on **outgoing** messages (`event.out`) from the relay account, not on inbound commands from other users.
 
 ## Key Directories
 
 There is no package directory or `src/` tree. Repository-owned code lives at the project root.
 
-- `relay.py` — primary Telegram-to-NATS relay.
+- `relay.py` — primary Telegram-to-NATS relay with runtime allowlist commands.
+- `allowlist.py` — persisted allowlist storage and command helpers.
 - `youtube-transcripts.py` — standalone YouTube transcript NATS consumer/producer.
 - `config.py` — environment-backed runtime configuration.
 - `listchannels.py` — Telegram dialog ID discovery utility.
-- `README.md` — only project documentation found.
+- `README.md` — user-facing setup and `/allow` documentation.
 - Root `*.txt` transcript files — generated artifacts, not source or fixtures unless a future change explicitly promotes them.
 - `venv/`, `.env`, `*.session*`, and `data/` — local runtime/secrets/state; do not inspect or commit their contents.
 
@@ -62,9 +69,8 @@ python youtube-transcripts.py
 # Build the Docker image
 docker build -t tg-relay .
 
-# Run via Docker; README's volume example appears malformed, so verify before copying
-# Required env also includes RELAY_MAP and NATS_SERVER per config.py.
-docker run -e API_ID=XXXX -e API_HASH=XXXX -e RELAY_MAP=... -e NATS_SERVER=... -e SESSION_NAME="/data/session" -v "$PWD/data:/data" tg-relay
+# Run via Docker
+docker run -e API_ID=XXXX -e API_HASH=XXXX -e RELAY_MAP=... -e NATS_SERVER=... -e SESSION_NAME="/data/session" -e ALLOWLIST_PATH="/data/allowlist.json" -v "$PWD/data:/data" tg-relay
 
 # Dokku scaling from README
 dokku ps:scale tg-relay web=0 cmd=1
@@ -73,35 +79,43 @@ dokku ps:scale tg-relay web=0 cmd=1
 Use focused Python syntax checks when changing code because no automated suite exists:
 
 ```sh
-python -m py_compile relay.py youtube-transcripts.py config.py listchannels.py
+python -m py_compile relay.py allowlist.py youtube-transcripts.py config.py listchannels.py
 ```
 
 ## Code Conventions & Common Patterns
 
-- Style is plain Python scripts, not a package: module-level functions, module-level clients, and mutable globals (`client`, `nats_client`, `RELAY_MAP`).
-- Names are mostly `snake_case` for functions (`get_real_chat_id`, `process_youtube_transcript`, `message_handler`). Some locals use camelCase (`channelNames`, `contractAddress`); prefer existing local style when making narrow edits, but use `snake_case` for new helpers.
+- Style is plain Python scripts, not a package: module-level functions, module-level clients, and mutable globals (`client`, `nats_client`, `RELAY_MAP`, `allowlist`, `runtime_ids`).
+- Names are mostly `snake_case` for functions (`get_real_chat_id`, `handle_command`, `save_runtime_sources`). Some locals and NATS fields use camelCase (`channelName`, `contractAddress`); prefer existing local style when making narrow edits, but use `snake_case` for new helpers.
 - Four-space indentation. No project formatter is configured; keep diffs minimal and avoid broad restyling.
 - Logging pattern: `logging.basicConfig(level=logging.INFO)` plus `logger = logging.getLogger(__name__)`; operational failures are logged with `logger.error(...)`/`logger.warning(...)`.
 - Async pattern: long-running processes use `asyncio`, Telethon callbacks, and `nats-py` async publish/subscribe. Avoid blocking calls in new async paths; existing `youtube-transcripts.py` currently performs `requests`, transcript fetching, and file I/O inline in the event loop.
 - Error handling differs by script:
-  - `relay.py` has little local exception handling; setup, parsing, event-shape, and publish failures can propagate.
+  - `relay.py` catches allowlist save failures and entity lookup failures in command helpers; setup, parsing, and publish failures can still propagate.
   - `youtube-transcripts.py` catches `JSONDecodeError`, broad processing errors, file-write errors, and NATS publish errors; helper failures return sentinel values such as `None`, `"Unknown"`, or `""`.
 - Dependency/config pattern: scripts import `config` directly and instantiate external clients directly. There is no dependency injection layer, factory, schema model, or class hierarchy.
 - NATS messages are JSON dictionaries encoded to bytes with `json.dumps(...).encode()` or `.encode('utf-8')`.
 - Telegram session state is controlled by `SESSION_NAME`; prefer explicit paths for deployed/persistent sessions.
-- Do not add shims around the current `RELAY_MAP` behavior without deciding whether to follow README syntax or current runtime syntax; that mismatch is a real behavior bug, not a documentation detail.
+- Allowlist entries are shaped `{destinations: list[str], label: str, kind: str}` with `kind` in `env`, `user`, `chat`, `channel`, or `source`.
 
 ## Important Files
 
 - `config.py` — authoritative config surface:
   - Required: `API_ID`, `API_HASH`, `RELAY_MAP`, `NATS_SERVER`.
-  - Defaults: `FORWARD=True`, `SESSION_NAME='session'`, `NATS_SUBJECT='telegram-messages'`, `NATS_USER=''`, `NATS_PASS=''`.
+  - Defaults: `FORWARD=True`, `SESSION_NAME='session'`, `NATS_SUBJECT='telegram-messages'`, `NATS_USER=''`, `NATS_PASS=''`, `ALLOWLIST_PATH='data/allowlist.json'`.
 - `relay.py` — key functions:
-  - `setup()` connects NATS and builds `RELAY_MAP`.
+  - `setup()` connects NATS, loads allowlist, and seeds `RELAY_MAP` into allowlist.
   - `get_real_chat_id(chat)` normalizes Telethon peer IDs.
   - `get_message_link(event)` builds public or `/c/` Telegram links.
   - `extract_ca(text)` parses `CA:` alphanumeric tokens.
-  - `my_event_handler(event)` handles inbound Telegram messages and publishes NATS payloads.
+  - `log_unseen_source(event, source_id)` logs first contact and `/allow` hints for private DMs.
+  - `handle_command(event, parsed)` implements `/allow`, `/remove`, `/list`.
+  - `my_event_handler(event)` handles inbound Telegram messages and publishes NATS payloads for allowlisted sources.
+- `allowlist.py` — key functions:
+  - `load_store(path)` / `save_store(path, sources)` — JSON persistence under `{"sources": {...}}`.
+  - `add_source()` / `remove_source()` — mutate allowlist entries.
+  - `source_id_from_chat_id(chat_id)` — normalized source ID for channels, groups, and users.
+  - `parse_command(text)` — split `/command` and args from outgoing message text.
+  - `format_listing(sources)` — human-readable allowlist for `/list` and logs.
 - `youtube-transcripts.py` — key functions:
   - `get_video_id(youtube_url)` parses supported YouTube URL forms.
   - `get_video_title(video_id)` fetches the page title via `requests`.
@@ -120,6 +134,7 @@ python -m py_compile relay.py youtube-transcripts.py config.py listchannels.py
 - Treat `.env` and `*.session*` as secrets/runtime state. Do not read, print, commit, or include their values in generated artifacts.
 - First Telegram login may be interactive through Telethon unless a valid session file already exists. Persistent storage is required for Docker/Dokku-style deployments.
 - Both relay and transcript flows require a reachable NATS server. NATS subjects are partly configurable (`NATS_SUBJECT` for relay output) and partly hard-coded (`youtube-transcript`, `youtube-summaries`).
+- Persist `ALLOWLIST_PATH` alongside the session in deployments so runtime `/allow` changes survive restarts.
 - Docker context is broad because `Dockerfile` uses `COPY . .`; avoid adding large/generated root files, and update `.dockerignore` if build reproducibility matters.
 
 ## Testing & QA
@@ -132,11 +147,13 @@ There is no first-party automated test suite or configured QA tooling.
 - Minimum safe check for code edits:
 
 ```sh
-python -m py_compile relay.py youtube-transcripts.py config.py listchannels.py
+python -m py_compile relay.py allowlist.py youtube-transcripts.py config.py listchannels.py
 ```
 
 - Behavioral verification for relay changes requires live Telegram + NATS setup:
   - Valid `API_ID`, `API_HASH`, `RELAY_MAP`, `NATS_SERVER`, and persistent `SESSION_NAME`.
-  - Confirm `relay.py` publishes the expected JSON payload on `NATS_SUBJECT` for a mapped chat.
+  - Confirm `relay.py` publishes the expected JSON payload on `NATS_SUBJECT` for an allowlisted channel or DM.
+  - For private DM support: DM the relay account, send `/allow` as a reply from the relay account, confirm persistence in `ALLOWLIST_PATH`, and confirm subsequent messages publish to NATS.
+  - For commands: verify `/list` output and `/remove` stops publishing without affecting `RELAY_MAP`-seeded entries until env changes.
 - Behavioral verification for transcript changes requires a NATS message on `youtube-transcript` with `youtubeLink`, network access to YouTube/transcript endpoints, and confirmation of both local transcript file output and `youtube-summaries` publish.
 - Because `relay.py` and `listchannels.py` execute Telethon startup at import/top level, future unit tests should isolate those side effects before importing modules directly.
