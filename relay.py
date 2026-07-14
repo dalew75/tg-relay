@@ -21,7 +21,11 @@ nats_client = None
 
 async def setup():
     global nats_client
-    nats_client = await nats.connect(config.NATS_SERVER)
+    nats_client = await nats.connect(
+        config.NATS_SERVER,
+        user=config.NATS_USER or None,
+        password=config.NATS_PASS or None,
+    )
 
     user = await client.get_me()
     logger.info('Started serving as {}'.format(user.first_name))
@@ -132,6 +136,7 @@ async def my_event_handler(event):
                     "chatId": event.chat.id,
                     "realChatId": real_chat_id,  # Use the real chat ID
                     "channelName": channelName,
+                    "messageId": event.message.id,
                     "message": event.message.message,
                     "messageLink": message_link,
                     "userId": event.message.from_id.user_id if event.message.from_id else None,

@@ -3,3 +3,8 @@
 *.session*
 data/
 docs.org
+transcripts/
+__pycache__/
+*.py[cod]
+venv/
+*.deb

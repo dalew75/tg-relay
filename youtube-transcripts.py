@@ -4,7 +4,7 @@ import logging
 import json
 from pprint import pformat
 import re
-import os
+from pathlib import Path
 
 import nats
 import config
@@ -16,6 +16,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 nats_client = None
+TRANSCRIPT_DIR = Path("transcripts")
 
 def get_video_id(youtube_url):
     """
@@ -74,16 +75,18 @@ def download_transcript(video_id):
 
 async def process_youtube_transcript(youtube_link):
     """
-    Process a YouTube link to extract and save the transcript.
+    Process a YouTube link to extract the transcript.
     Args:
         youtube_link (str): The YouTube URL to process.
+    Returns:
+        dict: Dictionary containing video_id, title, and transcript_text, or None if error.
     """
     logger.info(f"Processing YouTube link: {youtube_link}")
     
     video_id = get_video_id(youtube_link)
     if not video_id:
         logger.error(f"Invalid YouTube URL: {youtube_link}")
-        return
+        return None
 
     logger.info(f"Extracted video ID: {video_id}")
     
@@ -95,34 +98,14 @@ async def process_youtube_transcript(youtube_link):
     transcript_text = download_transcript(video_id)
     if not transcript_text:
         logger.error("Unable to download transcript")
-        return
+        return None
 
-    # Create filename and save transcript
-    file_name = f"{video_id}_{video_title}.txt"
-    file_name = re.sub(r'[\\/*?:"<>|]', '', file_name)  # Remove invalid characters
-    
-    try:
-        with open(file_name, 'w', encoding='utf-8') as file:
-            file.write(transcript_text)
-        logger.info(f"Transcript saved to {file_name}")
-        # Publish the transcript to the 'youtube-summaries' NATS subject
-        if nats_client:
-            import time
-            summary_data = {
-                "youtubeLink": youtube_link,
-                "timestamp": int(time.time()),
-                "transcript": transcript_text
-            }
-            try:
-                await nats_client.publish(
-                    "youtube-summaries", 
-                    json.dumps(summary_data).encode('utf-8')
-                )
-                logger.info(f"Published transcript to 'youtube-summaries' for {youtube_link}")
-            except Exception as e:
-                logger.error(f"Failed to publish transcript to NATS: {e}")
-    except Exception as e:
-        logger.error(f"Error saving transcript to file: {e}")
+    return {
+        'video_id': video_id,
+        'title': video_title,
+        'transcript': transcript_text,
+        'youtube_link': youtube_link
+    }
 
 async def message_handler(msg):
     """Handle incoming messages from NATS subscription"""
@@ -134,7 +117,44 @@ async def message_handler(msg):
         # Check if the message contains a youtubeLink field
         if 'youtubeLink' in data:
             youtube_link = data['youtubeLink']
-            await process_youtube_transcript(youtube_link)
+            transcript_data = await process_youtube_transcript(youtube_link)
+            
+            if transcript_data:
+                # Save transcript to file
+                file_name = f"{transcript_data['video_id']}_{transcript_data['title']}.txt"
+                file_name = re.sub(r'[\\/*?:"<>|]', '', file_name)  # Remove invalid characters
+                
+                try:
+                    TRANSCRIPT_DIR.mkdir(parents=True, exist_ok=True)
+                    file_path = TRANSCRIPT_DIR / file_name
+                    with open(file_path, 'w', encoding='utf-8') as file:
+                        file.write(transcript_data['transcript'])
+                    logger.info(f"Transcript saved to {file_path}")
+                except Exception as e:
+                    logger.error(f"Error saving transcript to file: {e}")
+                
+                # Publish the transcript to the 'youtube-summaries' NATS subject
+                if nats_client:
+                    import time
+                    summary_data = {
+                        "youtubeLink": youtube_link,
+                        "timestamp": int(time.time()),
+                        "transcript": transcript_data['transcript'],
+                        "video_id": transcript_data['video_id'],
+                        "title": transcript_data['title']
+                    }
+                    if 'chatId' in data:
+                        summary_data['chatId'] = data['chatId']
+                    try:
+                        await nats_client.publish(
+                            "youtube-summaries", 
+                            json.dumps(summary_data).encode('utf-8')
+                        )
+                        logger.info(f"Published transcript to 'youtube-summaries' for {youtube_link}")
+                    except Exception as e:
+                        logger.error(f"Failed to publish transcript to NATS: {e}")
+            else:
+                logger.error("Failed to process YouTube transcript")
         else:
             logger.warning("Message does not contain 'youtubeLink' field")
             
@@ -148,7 +168,11 @@ async def setup():
     """Setup NATS connection and subscription"""
     global nats_client
     try:
-        nats_client = await nats.connect(config.NATS_SERVER)
+        nats_client = await nats.connect(
+            config.NATS_SERVER,
+            user=config.NATS_USER or None,
+            password=config.NATS_PASS or None,
+        )
         logger.info(f"Connected to NATS server: {config.NATS_SERVER}")
         
         # Subscribe to the 'youtube-transcript' subject

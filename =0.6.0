@@ -1,0 +1,21 @@
+Collecting youtube-transcript-api
+  Using cached youtube_transcript_api-1.2.3-py3-none-any.whl.metadata (24 kB)
+Collecting defusedxml<0.8.0,>=0.7.1 (from youtube-transcript-api)
+  Using cached defusedxml-0.7.1-py2.py3-none-any.whl.metadata (32 kB)
+Collecting requests (from youtube-transcript-api)
+  Using cached requests-2.32.5-py3-none-any.whl.metadata (4.9 kB)
+Collecting charset_normalizer<4,>=2 (from requests->youtube-transcript-api)
+  Using cached charset_normalizer-3.4.4-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (37 kB)
+Requirement already satisfied: idna<4,>=2.5 in ./venv/lib/python3.12/site-packages (from requests->youtube-transcript-api) (3.10)
+Collecting urllib3<3,>=1.21.1 (from requests->youtube-transcript-api)
+  Using cached urllib3-2.5.0-py3-none-any.whl.metadata (6.5 kB)
+Collecting certifi>=2017.4.17 (from requests->youtube-transcript-api)
+  Using cached certifi-2025.10.5-py3-none-any.whl.metadata (2.5 kB)
+Using cached youtube_transcript_api-1.2.3-py3-none-any.whl (485 kB)
+Using cached defusedxml-0.7.1-py2.py3-none-any.whl (25 kB)
+Using cached requests-2.32.5-py3-none-any.whl (64 kB)
+Using cached certifi-2025.10.5-py3-none-any.whl (163 kB)
+Using cached charset_normalizer-3.4.4-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (153 kB)
+Using cached urllib3-2.5.0-py3-none-any.whl (129 kB)
+Installing collected packages: urllib3, defusedxml, charset_normalizer, certifi, requests, youtube-transcript-api
+Successfully installed certifi-2025.10.5 charset_normalizer-3.4.4 defusedxml-0.7.1 requests-2.32.5 urllib3-2.5.0 youtube-transcript-api-1.2.3

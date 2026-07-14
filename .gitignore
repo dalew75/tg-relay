@@ -3,3 +3,6 @@ data/
 *.session*
 docs.org
 venv/
+transcripts/
+__pycache__/
+*.py[cod]
