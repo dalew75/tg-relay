@@ -37,6 +37,7 @@ Common optional variables:
 | `NATS_USER` | *(empty)* | NATS username |
 | `NATS_PASS` | *(empty)* | NATS password |
 | `ALLOWLIST_PATH` | `data/allowlist.json` | Persisted runtime allowlist |
+| `MGMT_GROUP` | *(empty)* | `source_id:label` for the management group that receives pending-approval notifications |
 | `FORWARD` | `True` | Legacy forwarding for unmapped messages via `default` destinations |
 
 Why do I have to register an App?
@@ -68,13 +69,27 @@ destination label. Entries seeded from `RELAY_MAP` cannot be removed with
 cannot safely contain multiple comma-separated destination labels. Use `/allow`
 or edit `ALLOWLIST_PATH` for multi-destination sources.
 
-Runtime allowlist (`/allow`, `/remove`, `/list`)
-------------------------------------------------
+Runtime allowlist (`/allow`, `/remove`, `/disallow`, `/reset`, `/list`)
+------------------------------------------------------------------------
 
 After startup, the relay keeps an allowlist in memory and persists runtime
-changes to `ALLOWLIST_PATH`. Commands are sent **as the relay account** (outgoing
-messages from the logged-in user). They are not bot commands and are not sent
-by people DMing the account.
+changes to `ALLOWLIST_PATH`. Each entry has a `status`:
+
+- `allowed` — relay messages to NATS
+- `pending` — seen but not approved; no relay
+- `denied` — explicitly ignored; no relay
+
+Commands are sent **as the relay account** (outgoing messages from the logged-in
+user). They are not bot commands and are not sent by people DMing the account.
+
+When `MGMT_GROUP` is set (for example `1888203970:BotDevGroup`), the **first**
+message from a new source is posted once to that group with source metadata and
+a message preview. Reply to that notification with `/allow`, `/disallow`, or
+`/reset`.
+
+`MGMT_GROUP` is separate from `RELAY_MAP`: listing a group in `RELAY_MAP` only
+allowlists it as a relay *source*. To receive pending-approval notifications
+*in* BotDevGroup, you must also set `MGMT_GROUP=1888203970:BotDevGroup`.
 
 ### `/allow` — start relaying a source
 
@@ -117,6 +132,26 @@ Relaying 123456789 (@someuser) -> @someuser
 ```
 
 Sources seeded from `RELAY_MAP` must be removed from env and the relay restarted.
+
+### `/disallow` — permanently ignore a source
+
+```
+/disallow        (reply to a pending notification or source message)
+/disallow 123456789
+```
+
+Marks the source `denied` in `ALLOWLIST_PATH`. No relay and no further mgmt
+notifications.
+
+### `/reset` — clear a source from the allowlist
+
+```
+/reset           (reply to a pending notification or source message)
+/reset 123456789
+```
+
+Removes the entry from `ALLOWLIST_PATH` entirely. The next message from that
+source is treated as new (one new mgmt notification, if configured).
 
 ### `/list` — show the current allowlist
 
@@ -168,10 +203,8 @@ List dialogs and numeric IDs to build `RELAY_MAP` or `/allow` targets:
 Legacy forwarding
 -----------------
 
-Unmapped messages that are not handled by the allowlist may still be forwarded
-to destinations listed under a `default` key in `RELAY_MAP`. That path is
-separate from the NATS publish flow. Set `FORWARD=False` to re-send without
-Telegram's forward attribution.
+The primary path is NATS publishing for `allowed` sources. Unapproved sources
+are held as `pending` or `denied` in the allowlist instead of being forwarded.
 
 YouTube transcripts (separate worker)
 -------------------------------------
