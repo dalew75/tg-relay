@@ -179,10 +179,10 @@ async def save_runtime_sources(event):
 
 
 async def command_target(event, args):
-    if event.reply_to_msg_id:
-        reply = await event.get_reply_message()
-        if reply is not None:
-            return source_id_from_chat_id(reply.chat_id), reply, args
+    if event.message.is_reply:
+        reply = await event.message.get_reply_message()
+        chat_id = reply.chat_id if reply is not None else event.chat_id
+        return source_id_from_chat_id(chat_id), reply, args
     if args and args[0].isdigit():
         return int(args[0]), None, args[1:]
     return None, None, []

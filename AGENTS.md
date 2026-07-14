@@ -14,7 +14,7 @@ This is not a Telegram bot. Changes that touch runtime behavior usually need Tel
   3. `setup()` loads the persisted allowlist from `config.ALLOWLIST_PATH` via `allowlist.load_store()`.
   4. `setup()` parses `config.RELAY_MAP` into the module-global `RELAY_MAP` and seeds any missing keys into the in-memory allowlist with `kind="env"`.
   5. `@client.on(events.NewMessage)` registers `my_event_handler(event)`.
-  6. Outgoing messages from the relay account are checked for `/allow`, `/remove`, and `/list` via `allowlist.parse_command()` and `handle_command()`.
+  6. Outgoing messages from the relay account are checked for `/allow`, `/remove`, and `/list` via `allowlist.parse_command()` and `handle_command()`. Reply-form `/allow [label]` resolves the source ID from the replied message; omitting the label derives it from the source entity.
   7. For allowlisted sources (channels, groups, or private users), the handler publishes JSON to `config.NATS_SUBJECT` (default `telegram-messages`). Payload fields include `chatId`, `realChatId`, `channelName`, `messageId`, `message`, `messageLink`, `userId`, and `username`; `contractAddress` and `isTradeable` are conditional.
   8. First-seen sources are logged once with allowlist status; private DMs log a hint to reply `/allow`.
   9. Runtime allowlist changes (not `RELAY_MAP`-seeded) are persisted to `ALLOWLIST_PATH` through `save_runtime_sources()`.
@@ -81,6 +81,10 @@ Use focused Python syntax checks when changing code because no automated suite e
 ```sh
 python -m py_compile relay.py allowlist.py youtube-transcripts.py config.py listchannels.py
 ```
+
+Keep `README.md` and `AGENTS.md` synchronized with every committed behavior,
+configuration, command, architecture, or workflow change. Update both before
+staging future commits; do not commit runtime changes with stale documentation.
 
 ## Code Conventions & Common Patterns
 

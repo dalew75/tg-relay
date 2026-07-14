@@ -87,6 +87,10 @@ Allow a channel, group, or **private DM** and publish its messages to NATS.
 /allow My Label
 /allow Label One,Label Two
 ```
+When the command is a Telegram reply, the relay reads the source ID from the
+replied message automatically. `/allow` derives the label from that source's
+username, title, or name; `/allow My Label` overrides only the label. Keep the
+reply context attached when sending either form.
 
 **Or send with an explicit ID** (from logs or `listchannels.py`):
 
