@@ -39,6 +39,7 @@ allowlist = {}
 env_ids = set()
 seen_sources = set()
 nats_client = None
+my_id = None
 mgmt_group_id = None
 mgmt_group_entity = None
 
@@ -60,7 +61,7 @@ async def resolve_mgmt_group(raw: str):
 
 
 async def setup():
-    global nats_client, mgmt_group_id, mgmt_group_entity, env_ids
+    global nats_client, mgmt_group_id, mgmt_group_entity, env_ids, my_id
     nats_client = await nats.connect(
         config.NATS_SERVER,
         user=config.NATS_USER or None,
@@ -68,6 +69,7 @@ async def setup():
     )
 
     user = await client.get_me()
+    my_id = user.id
     logger.info('Started serving as {}'.format(user.first_name))
     await client.get_dialogs()
 
@@ -441,13 +443,15 @@ async def my_event_handler(event):
         parsed = parse_command(event.message.message or "")
         if parsed and await handle_command(event, parsed):
             return
-        return
+        if not config.RELAY_OUTGOING:
+            return
 
     source_id = source_id_from_chat_id(event.chat_id)
     if mgmt_group_id is not None and source_id == mgmt_group_id:
         return
 
-    await log_unseen_source(event, source_id)
+    if not event.out:
+        await log_unseen_source(event, source_id)
     real_chat_id = event.chat_id
     message_link = get_message_link(event)
     entry = allowlist.get(source_id)
@@ -468,13 +472,18 @@ async def my_event_handler(event):
                 "messageId": event.message.id,
                 "message": event.message.message,
                 "messageLink": message_link,
-                "userId": event.message.from_id.user_id if event.message.from_id else None,
+                "userId": (
+                    event.message.from_id.user_id
+                    if event.message.from_id
+                    else (my_id if event.out else None)
+                ),
                 "username": (
                     event.message.sender.username
                     if event.message.sender
                     and getattr(event.message.sender, 'username', None)
                     else None
                 ),
+                "isOutgoing": bool(event.out),
             }
             if contractAddress:
                 message["contractAddress"] = contractAddress
@@ -487,7 +496,7 @@ async def my_event_handler(event):
             logger.info(event.message.message)
         return
 
-    if is_pending(entry):
+    if is_pending(entry) or event.out:
         return
 
     await handle_new_pending_source(event, source_id)

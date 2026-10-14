@@ -39,6 +39,7 @@ Common optional variables:
 | `ALLOWLIST_PATH` | `data/allowlist.json` | Persisted runtime allowlist |
 | `MGMT_GROUP` | *(empty)* | `source_id:label` for the management group used when `MGMT_NOTIFY=True` |
 | `MGMT_NOTIFY` | `False` | Post pending-approval notifications to `MGMT_GROUP` (off by default) |
+| `RELAY_OUTGOING` | `False` | Also publish messages sent by the relay account itself in allowed sources (commands are never published) |
 | `FORWARD` | `True` | Legacy forwarding for unmapped messages via `default` destinations |
 
 Why do I have to register an App?
@@ -83,6 +84,12 @@ changes to `ALLOWLIST_PATH`. Each entry has a `status`:
 Commands are sent **as the relay account** (outgoing messages from the logged-in
 user). They are not bot commands and are not sent by people DMing the account.
 
+By default, other outgoing messages from the relay account are not published.
+Set `RELAY_OUTGOING=true` to publish them for `allowed` sources too (useful for
+summarizing whole conversations). Outgoing messages never mark a source `pending`.
+Avoid running commands inside an allowed chat with this enabled, since the
+relay's command replies may be published as well; use Saved Messages instead.
+
 When `MGMT_NOTIFY=True` and `MGMT_GROUP` is set (for example
 `1888203970:BotDevGroup`), the **first** message from a new source is posted once
 to that group with source metadata and a message preview. By default
@@ -94,6 +101,9 @@ silently so you can edit `data/allowlist.json` manually (`allowed`, `denied`, or
 allowlists it as a relay *source*. To receive pending-approval notifications
 *in* BotDevGroup, set both `MGMT_GROUP=1888203970:BotDevGroup` and
 `MGMT_NOTIFY=True`.
+
+Messages in `MGMT_GROUP` are never relayed, even if the group is also in
+`RELAY_MAP`; use a different chat as a relay source.
 
 ### `/allow` — start relaying a source
 
@@ -192,6 +202,7 @@ For each allowlisted source, each message is published as JSON to `NATS_SUBJECT`
 
 - `chatId`, `realChatId`, `channelName`, `messageId`, `message`, `messageLink`
 - `userId`, `username`
+- `isOutgoing` (always present; `true` only for relay-account messages, which are published only when `RELAY_OUTGOING=true`)
 - `contractAddress` (if the message contains `CA: ...`)
 - `isTradeable` (if the message mentions `pump.fun`)
 

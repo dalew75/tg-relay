@@ -14,10 +14,10 @@ This is not a Telegram bot. Changes that touch runtime behavior usually need Tel
   3. `setup()` loads the persisted allowlist from `config.ALLOWLIST_PATH` via `allowlist.load_store()`.
   4. `setup()` parses `config.RELAY_MAP` into the module-global `RELAY_MAP` and seeds any missing keys into the in-memory allowlist with `kind="env"`.
   5. `@client.on(events.NewMessage)` registers `my_event_handler(event)`.
-  6. Outgoing messages from the relay account are checked for `/allow`, `/remove`, `/disallow`, `/reset`, and `/list` via `allowlist.parse_command()` and `handle_command()`.
-  7. For `allowed` sources, the handler publishes JSON to `config.NATS_SUBJECT`. Payload fields include `chatId`, `realChatId`, `channelName`, `messageId`, `message`, `messageLink`, `userId`, and `username`; `contractAddress` and `isTradeable` are conditional.
+  6. Outgoing messages from the relay account are checked for `/allow`, `/remove`, `/disallow`, `/reset`, and `/list` via `allowlist.parse_command()` and `handle_command()`. Non-command outgoing messages are dropped unless `RELAY_OUTGOING=True`, in which case they continue to step 7 (but never create `pending` entries or unseen-source logs).
+  7. For `allowed` sources, the handler publishes JSON to `config.NATS_SUBJECT`. Payload fields include `chatId`, `realChatId`, `channelName`, `messageId`, `message`, `messageLink`, `userId`, `username`, and `isOutgoing` (`userId` falls back to the relay account id for outgoing messages without `from_id`); `contractAddress` and `isTradeable` are conditional.
   8. Unknown sources are marked `status=pending` in `ALLOWLIST_PATH`. Optional `MGMT_NOTIFY` posts one notification per new source to `MGMT_GROUP` (disabled by default).
-  9. `denied` sources are silently ignored; `pending` sources are not relayed or re-notified.
+  9. `denied` sources are silently ignored; `pending` sources are not relayed or re-notified. `MGMT_GROUP` is never relayed or marked pending, even if it also appears in `RELAY_MAP`.
   10. Runtime allowlist changes are persisted to `ALLOWLIST_PATH` through `save_allowlist()`.
   11. The bottom of the file runs `loop.run_until_complete(setup())` and `client.run_until_disconnected()` without an `if __name__ == "__main__"` guard.
 - `allowlist.py` holds JSON load/save, source add/remove, `source_id_from_chat_id()` (via Telethon `resolve_id`), command parsing, and listing format helpers.
@@ -31,7 +31,7 @@ This is not a Telegram bot. Changes that touch runtime behavior usually need Tel
 Known behavior notes when editing:
 - `RELAY_MAP` is comma-separated `source_id:label` entries. Commas cannot safely separate multiple destination labels within one entry because the same delimiter splits top-level entries; use `/allow` or `allowlist.json` for multi-destination sources.
 - README previously documented semicolon-separated multi-relay syntax and chat-to-chat forwarding as the primary path; runtime NATS publishing is driven by the allowlist. Legacy forwarding still exists for `RELAY_MAP.get('default', [])`, but setup cannot create a string `default` key because it casts keys to `int`.
-- `/allow`, `/remove`, and `/list` only run on **outgoing** messages (`event.out`) from the relay account, not on inbound commands from other users.
+- `/allow`, `/remove`, and `/list` only run on **outgoing** messages (`event.out`) from the relay account, not on inbound commands from other users. With `RELAY_OUTGOING=True`, non-command outgoing messages in `allowed` sources are also published; command replies posted inside an allowed chat may be published too.
 
 ## Key Directories
 
@@ -106,7 +106,7 @@ staging future commits; do not commit runtime changes with stale documentation.
 
 - `config.py` — authoritative config surface:
   - Required: `API_ID`, `API_HASH`, `RELAY_MAP`, `NATS_SERVER`.
-  - Defaults: `FORWARD=True`, `SESSION_NAME='session'`, `NATS_SUBJECT='telegram-messages'`, `NATS_USER=''`, `NATS_PASS=''`, `ALLOWLIST_PATH='data/allowlist.json'`, `MGMT_GROUP=''`, `MGMT_NOTIFY=False`.
+  - Defaults: `FORWARD=True`, `SESSION_NAME='session'`, `NATS_SUBJECT='telegram-messages'`, `NATS_USER=''`, `NATS_PASS=''`, `ALLOWLIST_PATH='data/allowlist.json'`, `MGMT_GROUP=''`, `MGMT_NOTIFY=False`, `RELAY_OUTGOING=False`.
 - `relay.py` — key functions:
   - `setup()` connects NATS, loads allowlist, and seeds `RELAY_MAP` into allowlist.
   - `get_real_chat_id(chat)` normalizes Telethon peer IDs.
