@@ -11,14 +11,14 @@ This is not a Telegram bot. Changes that touch runtime behavior usually need Tel
 - `relay.py` is the main process and Docker entrypoint.
   1. Imports `config.py`, constructs `TelegramClient(config.SESSION_NAME, config.API_ID, config.API_HASH)`, and calls `client.start()` at module import/startup.
   2. `setup()` connects a module-global `nats_client` to `config.NATS_SERVER`, optionally using `NATS_USER`/`NATS_PASS`.
-  3. `setup()` loads the persisted allowlist from `config.ALLOWLIST_PATH` via `allowlist.load_store()`.
+  3. `setup()` loads the persisted allowlist from `config.ALLOWLIST_PATH` via `allowlist.load_store()` and subscribes `handle_sources_request` to `config.SOURCES_SUBJECT` (the Sources API: `list` / `allow` / `deny` / `reset` request/reply, see README).
   4. `setup()` parses `config.RELAY_MAP` into the module-global `RELAY_MAP` and seeds any missing keys into the in-memory allowlist with `kind="env"`.
   5. `@client.on(events.NewMessage)` registers `my_event_handler(event)`.
-  6. Outgoing messages from the relay account are checked for `/allow`, `/remove`, `/disallow`, `/reset`, and `/list` via `allowlist.parse_command()` and `handle_command()`. Non-command outgoing messages are dropped unless `RELAY_OUTGOING=True`, in which case they continue to step 7 (but never create `pending` entries or unseen-source logs).
-  7. For `allowed` sources, the handler publishes JSON to `config.NATS_SUBJECT`. Payload fields include `chatId`, `realChatId`, `channelName`, `messageId`, `message`, `messageLink`, `userId`, `username`, and `isOutgoing` (`userId` falls back to the relay account id for outgoing messages without `from_id`); `contractAddress` and `isTradeable` are conditional.
+  6. Outgoing messages from the relay account are checked for `/allow`, `/remove`, `/disallow`, `/reset`, and `/list` via `allowlist.parse_command()` and `handle_command()`. Non-command outgoing messages are dropped unless `RELAY_OUTGOING=True`, in which case they continue to step 7 (they never create `pending` entries, but the first one per unseen source is logged with the `/allow` hint).
+  7. For `allowed` sources, the handler publishes JSON to `config.NATS_SUBJECT`. Payload fields include `chatId`, `realChatId`, `channelName`, `messageId`, `message`, `messageLink`, `userId`, `username`, `displayName`, and `isOutgoing` (sender resolved once per message via `resolve_sender()` / `event.get_sender()`, which fetches uncached users; `username` also checks active collectible `usernames`; `userId` is `event.sender_id`, falling back to the relay account id for outgoing messages); `contractAddress` and `isTradeable` are conditional.
   8. Unknown sources are marked `status=pending` in `ALLOWLIST_PATH`. Optional `MGMT_NOTIFY` posts one notification per new source to `MGMT_GROUP` (disabled by default).
   9. `denied` sources are silently ignored; `pending` sources are not relayed or re-notified. `MGMT_GROUP` is never relayed or marked pending, even if it also appears in `RELAY_MAP`.
-  10. Runtime allowlist changes are persisted to `ALLOWLIST_PATH` through `save_allowlist()`.
+  10. Runtime allowlist changes are persisted to `ALLOWLIST_PATH` through `save_allowlist()` and announced on `config.SOURCES_EVENT_SUBJECT` (`publish_source_event()`: `{op: "changed", id, source}` or `{op: "removed", id}`). Every message that reaches the source lookup also updates the in-memory `activity` (`lastMessageAt`, `messageCount`, `lastPreview`) reported by the API.
   11. The bottom of the file runs `loop.run_until_complete(setup())` and `client.run_until_disconnected()` without an `if __name__ == "__main__"` guard.
 - `allowlist.py` holds JSON load/save, source add/remove, `source_id_from_chat_id()` (via Telethon `resolve_id`), command parsing, and listing format helpers.
 - `youtube-transcripts.py` is a separate NATS worker, not launched by the Dockerfile.
@@ -106,16 +106,19 @@ staging future commits; do not commit runtime changes with stale documentation.
 
 - `config.py` — authoritative config surface:
   - Required: `API_ID`, `API_HASH`, `RELAY_MAP`, `NATS_SERVER`.
-  - Defaults: `FORWARD=True`, `SESSION_NAME='session'`, `NATS_SUBJECT='telegram-messages'`, `NATS_USER=''`, `NATS_PASS=''`, `ALLOWLIST_PATH='data/allowlist.json'`, `MGMT_GROUP=''`, `MGMT_NOTIFY=False`, `RELAY_OUTGOING=False`.
+  - Defaults: `FORWARD=True`, `SESSION_NAME='session'`, `NATS_SUBJECT='telegram-messages'`, `NATS_USER=''`, `NATS_PASS=''`, `ALLOWLIST_PATH='data/allowlist.json'`, `MGMT_GROUP=''`, `MGMT_NOTIFY=False`, `RELAY_OUTGOING=False`, `SOURCES_SUBJECT='tg-relay.sources'`, `SOURCES_EVENT_SUBJECT='tg-relay.sources.event'`.
 - `relay.py` — key functions:
   - `setup()` connects NATS, loads allowlist, and seeds `RELAY_MAP` into allowlist.
   - `get_real_chat_id(chat)` normalizes Telethon peer IDs.
   - `get_message_link(event)` builds public or `/c/` Telegram links.
   - `extract_ca(text)` parses `CA:` alphanumeric tokens.
+  - `resolve_sender(event)` returns `(username, display_name)` for the NATS payload.
   - `log_unseen_source(event, source_id)` logs first contact and `/allow` hints for private DMs.
   - `notify_mgmt_group(event, source_id)` optionally posts pending-approval notifications when `MGMT_NOTIFY=True`.
   - `handle_new_pending_source(event, source_id)` marks unknown sources `pending` and persists to `ALLOWLIST_PATH`.
   - `handle_command(event, parsed)` implements `/allow`, `/remove`, `/disallow`, `/reset`, `/list`.
+  - `allow_source_id()` / `deny_source_id()` / `reset_source_id()` — the allowlist changes shared by the Telegram commands and the Sources API (save + change event).
+  - `sources_api(request)` / `handle_sources_request(msg)` — the Sources API on `SOURCES_SUBJECT` (`list` with optional `status` filter, `allow` with optional label, `deny`, `reset`; `MGMT_GROUP` refused).
   - `my_event_handler(event)` handles inbound Telegram messages and publishes NATS payloads for allowlisted sources.
 - `allowlist.py` — key functions:
   - `load_store(path)` / `save_store(path, sources)` — JSON persistence under `{"sources": {...}}`.
@@ -124,6 +127,7 @@ staging future commits; do not commit runtime changes with stale documentation.
   - `parse_command(text)` — split `/command` and args from outgoing message text.
   - `format_pending_notification(...)` / `parse_pending_notification(text)` — MGMT_GROUP notification body and reply parsing.
   - `format_listing(sources)` — human-readable allowlist for `/list` and logs.
+  - `source_record(source_id, entry, *, env, activity)` — one source as the Sources API reports it.
 - `youtube-transcripts.py` — key functions:
   - `get_video_id(youtube_url)` parses supported YouTube URL forms.
   - `get_video_title(video_id)` fetches the page title via `requests`.

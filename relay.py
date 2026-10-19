@@ -4,6 +4,7 @@ import logging
 import json
 from pprint import pformat
 import re
+import time
 from pathlib import Path
 
 from allowlist import (
@@ -22,6 +23,7 @@ from allowlist import (
     remove_source,
     save_store,
     source_id_from_chat_id,
+    source_record,
 )
 
 from telethon import TelegramClient, events
@@ -38,6 +40,9 @@ RELAY_MAP = {}
 allowlist = {}
 env_ids = set()
 seen_sources = set()
+# source_id -> {lastMessageAt (epoch ms), messageCount, lastPreview}; in memory only
+activity = {}
+PREVIEW_CHARS = 120
 nats_client = None
 my_id = None
 mgmt_group_id = None
@@ -74,6 +79,7 @@ async def setup():
     await client.get_dialogs()
 
     allowlist.update(load_store(Path(config.ALLOWLIST_PATH)))
+    await nats_client.subscribe(config.SOURCES_SUBJECT, cb=handle_sources_request)
 
     for x in config.RELAY_MAP.split(','):
         if not x:
@@ -175,6 +181,31 @@ async def safe_name(event):
         return str(source_id)
 
 
+async def resolve_sender(event):
+    try:
+        # get_sender() falls back to an API fetch when the entity isn't cached
+        sender = await event.get_sender()
+    except Exception as e:
+        logger.warning(f"Could not resolve sender {event.sender_id}: {e}")
+        return None, None
+    if sender is None:
+        return None, None
+    username = getattr(sender, 'username', None)
+    if not username:
+        for entry in getattr(sender, 'usernames', None) or []:
+            if getattr(entry, 'active', False):
+                username = entry.username
+                break
+    display_name = (
+        " ".join(
+            filter(None, [getattr(sender, 'first_name', None), getattr(sender, 'last_name', None)])
+        )
+        or getattr(sender, 'title', None)
+        or None
+    )
+    return username, display_name
+
+
 async def log_unseen_source(event, source_id):
     if source_id is None or source_id in seen_sources:
         return
@@ -242,6 +273,7 @@ async def mark_pending_source(event, source_id):
     )
     mark_pending(allowlist, source_id, name, kind)
     await save_allowlist()
+    await publish_source_event(source_id)
     logger.info("Marked source %s (%s) as pending", source_id, name)
     return name, kind
 
@@ -328,6 +360,139 @@ async def save_allowlist(event=None):
         return False
 
 
+def record(source_id):
+    entry = allowlist.get(source_id)
+    if entry is None:
+        return None
+    return source_record(
+        source_id,
+        entry,
+        env=source_id in env_ids,
+        activity=activity.get(source_id),
+    )
+
+
+async def publish_source_event(source_id):
+    entry = allowlist.get(source_id)
+    payload = (
+        {"op": "changed", "id": source_id, "source": record(source_id)}
+        if entry is not None
+        else {"op": "removed", "id": source_id}
+    )
+    try:
+        await nats_client.publish(
+            config.SOURCES_EVENT_SUBJECT, json.dumps(payload).encode()
+        )
+    except Exception as error:
+        logger.error("Unable to publish source event for %s: %s", source_id, error)
+
+
+def note_activity(event, source_id):
+    seen = activity.setdefault(source_id, {"messageCount": 0})
+    seen["lastMessageAt"] = int(time.time() * 1000)
+    seen["messageCount"] += 1
+    seen["lastPreview"] = message_preview(event)[:PREVIEW_CHARS]
+
+
+async def allow_source_id(target, label, kind, event=None):
+    """Allow `target`; `label` may list comma-separated destinations. Returns (entry, destinations)."""
+    derived = label or await derive_label(target)
+    destinations = (
+        [destination.strip() for destination in label.split(",") if destination.strip()]
+        if label
+        else [derived]
+    )
+    entry = add_source(
+        allowlist,
+        target,
+        destinations,
+        label or derived,
+        kind,
+        status=STATUS_ALLOWED,
+    )
+    await save_allowlist(event)
+    await publish_source_event(target)
+    return entry, destinations
+
+
+async def deny_source_id(target, label, kind, event=None):
+    entry = disallow_source(allowlist, target, label or await derive_label(target), kind)
+    await save_allowlist(event)
+    await publish_source_event(target)
+    return entry
+
+
+async def reset_source_id(target, event=None):
+    """Forget `target`. Returns an error text, or None once it is gone."""
+    if target in env_ids and target not in sources_to_persist():
+        return f"{target} is seeded by RELAY_MAP — remove it from RELAY_MAP and restart."
+    if not remove_source(allowlist, target):
+        return f"{target} is not in the allowlist."
+    await save_allowlist(event)
+    await publish_source_event(target)
+    return None
+
+
+def list_records(status="all"):
+    records = [
+        record(source_id)
+        for source_id, entry in allowlist.items()
+        if status == "all" or entry.get("status", STATUS_ALLOWED) == status
+    ]
+    records.sort(key=lambda r: (r["lastMessageAt"] or 0, r["label"].lower()), reverse=True)
+    return records
+
+
+async def sources_api(request):
+    op = request.get("op")
+    if op == "list":
+        status = request.get("status") or "all"
+        if status not in {"all", "allowed", "pending", "denied"}:
+            return {"success": False, "error": f"unknown status {status!r}"}
+        return {
+            "success": True,
+            "subject": config.NATS_SUBJECT,
+            "sources": list_records(status),
+        }
+    if op not in {"allow", "deny", "reset"}:
+        return {"success": False, "error": f"unknown op {op!r}"}
+    try:
+        target = int(request.get("id"))
+    except (TypeError, ValueError):
+        return {"success": False, "error": "id must be a numeric source id"}
+    if mgmt_group_id is not None and target == mgmt_group_id:
+        return {"success": False, "error": "MGMT_GROUP is never relayed"}
+    existing = allowlist.get(target) or {}
+    kind = existing.get("kind", "source")
+    if op == "reset":
+        error = await reset_source_id(target)
+        if error:
+            return {"success": False, "error": error}
+        return {"success": True, "id": target, "source": None}
+    if op == "deny":
+        await deny_source_id(target, existing.get("label"), kind)
+        return {"success": True, "id": target, "source": record(target)}
+    label = str(request.get("label") or "").strip()
+    await allow_source_id(target, label, kind)
+    return {"success": True, "id": target, "source": record(target)}
+
+
+async def handle_sources_request(msg):
+    try:
+        request = json.loads(msg.data.decode() or "{}")
+        if not isinstance(request, dict):
+            raise ValueError("request must be a JSON object")
+        response = await sources_api(request)
+    except Exception as error:
+        logger.error("Sources request failed: %s", error)
+        response = {"success": False, "error": str(error)}
+    if msg.reply:
+        try:
+            await msg.respond(json.dumps(response).encode())
+        except Exception as error:
+            logger.error("Unable to answer sources request: %s", error)
+
+
 async def command_target(event, args):
     if event.message.is_reply:
         reply = await event.message.get_reply_message()
@@ -371,18 +536,10 @@ async def handle_command(event, parsed):
         return True
 
     if cmd == "/reset":
-        if target in env_ids and target not in sources_to_persist():
-            await event.reply(
-                f"{target} is seeded by RELAY_MAP — remove it from RELAY_MAP and restart."
-            )
-            return True
-        if remove_source(allowlist, target):
-            await save_allowlist(event)
-            await event.reply(
-                f"Reset {target}; it will be treated as new on the next message."
-            )
-        else:
-            await event.reply(f"{target} is not in the allowlist.")
+        error = await reset_source_id(target, event)
+        await event.reply(
+            error or f"Reset {target}; it will be treated as new on the next message."
+        )
         return True
 
     if cmd == "/disallow":
@@ -391,13 +548,9 @@ async def handle_command(event, parsed):
             if reply is not None
             else None
         )
-        label = (
-            (pending or {}).get("name")
-            or await derive_label(target)
-        )
+        label = (pending or {}).get("name")
         kind = pending_kind or (source_kind(event) if reply is not None else "source")
-        entry = disallow_source(allowlist, target, label, kind)
-        await save_allowlist(event)
+        entry = await deny_source_id(target, label, kind, event)
         await event.reply(f"Ignoring {target} ({entry['label']})")
         return True
 
@@ -409,28 +562,15 @@ async def handle_command(event, parsed):
         elif is_allowed(allowlist.get(target)):
             remove_source(allowlist, target)
             await save_allowlist(event)
+            await publish_source_event(target)
             await event.reply(f"Stopped relaying {target}")
         else:
             await event.reply(f"{target} is not allowlisted.")
         return True
 
     label = " ".join(label_args)
-    derived = label or await derive_label(target)
-    destinations = (
-        [destination.strip() for destination in label.split(",") if destination.strip()]
-        if label
-        else [derived]
-    )
     kind = pending_kind or (source_kind(event) if reply is not None else "source")
-    entry = add_source(
-        allowlist,
-        target,
-        destinations,
-        label or derived,
-        kind,
-        status=STATUS_ALLOWED,
-    )
-    await save_allowlist(event)
+    entry, destinations = await allow_source_id(target, label, kind, event)
     await event.reply(
         f"Relaying {target} ({entry['label']}) -> {', '.join(destinations)}"
     )
@@ -450,8 +590,8 @@ async def my_event_handler(event):
     if mgmt_group_id is not None and source_id == mgmt_group_id:
         return
 
-    if not event.out:
-        await log_unseen_source(event, source_id)
+    await log_unseen_source(event, source_id)
+    note_activity(event, source_id)
     real_chat_id = event.chat_id
     message_link = get_message_link(event)
     entry = allowlist.get(source_id)
@@ -460,6 +600,10 @@ async def my_event_handler(event):
         return
 
     if is_allowed(entry):
+        username, display_name = await resolve_sender(event)
+        user_id = event.sender_id
+        if user_id is None and event.out:
+            user_id = my_id
         for channelName in entry["destinations"]:
             logger.info(f'Channel: {channelName}')
             logger.info(f'Message: {event.message.message}')
@@ -472,17 +616,9 @@ async def my_event_handler(event):
                 "messageId": event.message.id,
                 "message": event.message.message,
                 "messageLink": message_link,
-                "userId": (
-                    event.message.from_id.user_id
-                    if event.message.from_id
-                    else (my_id if event.out else None)
-                ),
-                "username": (
-                    event.message.sender.username
-                    if event.message.sender
-                    and getattr(event.message.sender, 'username', None)
-                    else None
-                ),
+                "userId": user_id,
+                "username": username,
+                "displayName": display_name,
                 "isOutgoing": bool(event.out),
             }
             if contractAddress:

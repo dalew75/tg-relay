@@ -41,6 +41,8 @@ Common optional variables:
 | `MGMT_NOTIFY` | `False` | Post pending-approval notifications to `MGMT_GROUP` (off by default) |
 | `RELAY_OUTGOING` | `False` | Also publish messages sent by the relay account itself in allowed sources (commands are never published) |
 | `FORWARD` | `True` | Legacy forwarding for unmapped messages via `default` destinations |
+| `SOURCES_SUBJECT` | `tg-relay.sources` | NATS request/reply subject of the [Sources API](#sources-api) |
+| `SOURCES_EVENT_SUBJECT` | `tg-relay.sources.event` | Where every allowlist change is announced |
 
 Why do I have to register an App?
 ---------------------------------
@@ -86,7 +88,8 @@ user). They are not bot commands and are not sent by people DMing the account.
 
 By default, other outgoing messages from the relay account are not published.
 Set `RELAY_OUTGOING=true` to publish them for `allowed` sources too (useful for
-summarizing whole conversations). Outgoing messages never mark a source `pending`.
+summarizing whole conversations). Outgoing messages never mark a source `pending`,
+but the first one in an unknown chat logs the `New source ... /allow` hint.
 Avoid running commands inside an allowed chat with this enabled, since the
 relay's command replies may be published as well; use Saved Messages instead.
 
@@ -201,10 +204,48 @@ For each allowlisted source, each message is published as JSON to `NATS_SUBJECT`
 (default `telegram-messages`). Core fields:
 
 - `chatId`, `realChatId`, `channelName`, `messageId`, `message`, `messageLink`
-- `userId`, `username`
+- `userId`, `username`, `displayName` — the sender is resolved via Telegram if not cached, so `username` is filled for first-time senders; it is `null` only when the account has no public @handle. `displayName` is first + last name (or channel title) and is always set when the sender resolves
 - `isOutgoing` (always present; `true` only for relay-account messages, which are published only when `RELAY_OUTGOING=true`)
 - `contractAddress` (if the message contains `CA: ...`)
 - `isTradeable` (if the message mentions `pump.fun`)
+
+Sources API <a name="sources-api"></a>
+-------------------------------------
+
+The relay answers NATS requests on `SOURCES_SUBJECT` (default
+`tg-relay.sources`), so other apps (the portal's **Telegram** page, through the
+nats-bridge) can see and change the allowlist without Telegram commands. Each
+request is a JSON object with an `op`:
+
+| Request | Does |
+|---------|------|
+| `{"op": "list", "status": "all"}` | Every source the relay has seen; `status` may be `allowed`, `pending`, `denied` or `all` (default) |
+| `{"op": "allow", "id": 123, "label": "..."}` | Same as `/allow`: relay to `NATS_SUBJECT`; no `label` = derived from the source |
+| `{"op": "deny", "id": 123}` | Same as `/disallow`: silence the source (`denied`) |
+| `{"op": "reset", "id": 123}` | Same as `/reset`: forget it; its next message makes it `pending` again |
+
+Replies are `{"success": true, ...}` or `{"success": false, "error": "..."}`.
+`list` answers `{"success": true, "subject": NATS_SUBJECT, "sources": [...]}`,
+newest activity first; the others answer `{"success": true, "id", "source"}`
+(`source` is `null` after a reset). Each source is:
+
+```json
+{"id": 123, "label": "@someuser", "kind": "user", "status": "pending",
+ "destinations": [], "env": false, "lastMessageAt": 1760000000000,
+ "messageCount": 4, "lastPreview": "hi"}
+```
+
+`env` is true for `RELAY_MAP` seeds (they can be silenced but not reset).
+`lastMessageAt` (epoch ms), `messageCount` and `lastPreview` cover only messages
+seen since the relay started. `MGMT_GROUP` is refused.
+
+Every change (from the API, a Telegram command or a new pending source) is
+published on `SOURCES_EVENT_SUBJECT` as `{"op": "changed", "id", "source"}` or
+`{"op": "removed", "id"}`.
+
+```sh
+nats req tg-relay.sources '{"op":"list","status":"pending"}'
+```
 
 List Channels <a name="listchannels"></a>
 -----------------------------------------

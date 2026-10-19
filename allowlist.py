@@ -197,3 +197,24 @@ def parse_pending_notification(text: str) -> dict | None:
             else None
         ),
     }
+
+
+def source_record(
+    source_id: int,
+    entry: dict,
+    *,
+    env: bool = False,
+    activity: dict | None = None,
+) -> dict:
+    activity = activity or {}
+    return {
+        "id": source_id,
+        "label": entry.get("label") or str(source_id),
+        "kind": entry.get("kind", "source"),
+        "status": entry.get("status", STATUS_ALLOWED),
+        "destinations": list(entry.get("destinations") or []),
+        "env": env,
+        "lastMessageAt": activity.get("lastMessageAt"),
+        "messageCount": activity.get("messageCount", 0),
+        "lastPreview": activity.get("lastPreview"),
+    }
