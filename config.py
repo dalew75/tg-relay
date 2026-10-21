@@ -1,4 +1,23 @@
+import os
+from pathlib import Path
+
 from decouple import config
+
+
+def _load_nats_credentials():
+    """Fill NATS_USER / NATS_PASS from the shared credentials file (unified-messaging's
+    NATS_CREDENTIALS_FILE, default ~/.config/nats/credentials.env). Real env vars win, and decouple
+    reads os.environ before .env. Values are never logged."""
+    path = Path(os.path.expanduser(os.environ.get('NATS_CREDENTIALS_FILE', '').strip() or '~/.config/nats/credentials.env'))
+    if not path.is_file():
+        return
+    for line in path.read_text().splitlines():
+        key, sep, value = line.strip().partition('=')
+        if sep and key and not key.startswith('#'):
+            os.environ.setdefault(key.strip(), value.strip().strip('"\''))
+
+
+_load_nats_credentials()
 
 API_ID = config('API_ID')
 API_HASH = config('API_HASH')
