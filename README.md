@@ -260,6 +260,8 @@ nats req tg-relay.send '{"chatId": "-1001234567890", "text": "hi from the portal
 ```
 
 - `chatId` is the `realChatId` the relay publishes (a number or a numeric string).
+  Instead of `chatId` you can pass `sourceId`, the allowlist id (as `sources` lists it);
+  the relay finds that chat in its dialogs and answers with its real `chatId`.
 - `text` is required, up to 4096 characters. `replyTo` (a message id) is optional.
 - Only `allowed` sources can be written to; `MGMT_GROUP` is refused.
 - Reply: `{"ok": true, "messageId": 42, "chatId": ...}` or `{"ok": false, "error": "..."}`

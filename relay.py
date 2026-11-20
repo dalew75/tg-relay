@@ -28,6 +28,7 @@ from allowlist import (
 )
 
 from telethon import TelegramClient, events
+from telethon.utils import get_peer_id
 import nats
 import config
 
@@ -501,12 +502,48 @@ async def handle_sources_request(msg):
             logger.error("Unable to answer sources request: %s", error)
 
 
+# source id -> dialog entity, so a sender that only knows the allowlist id can be answered
+dialog_entities = {}
+
+
+async def load_dialog_entities():
+    dialog_entities.clear()
+    async for dialog in client.iter_dialogs():
+        source_id = source_id_from_chat_id(get_peer_id(dialog.entity))
+        if source_id is not None:
+            dialog_entities[source_id] = dialog.entity
+
+
+async def dialog_entity(source_id):
+    """The chat behind an allowlist `source_id` (bare id, no sign or -100), from the dialogs; refreshed once on a miss."""
+    if source_id not in dialog_entities:
+        await load_dialog_entities()
+    return dialog_entities.get(source_id)
+
+
 async def send_api(request):
-    """Sends `text` as the relay account to an allowed source (`chatId`: the realChatId the relay publishes)."""
-    try:
-        chat_id = int(str(request.get("chatId")).strip())
-    except (TypeError, ValueError):
-        return {"ok": False, "error": "chatId must be a numeric Telegram chat id"}
+    """Sends `text` as the relay account to an allowed source: `chatId` (the realChatId the relay publishes)
+    or `sourceId` (the allowlist id, resolved through the dialogs). The reply's `chatId` is the real chat id."""
+    target = None
+    if request.get("chatId") is not None:
+        try:
+            chat_id = int(str(request.get("chatId")).strip())
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "chatId must be a numeric Telegram chat id"}
+        target = chat_id
+    elif request.get("sourceId") is not None:
+        try:
+            wanted = int(str(request.get("sourceId")).strip())
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "sourceId must be a numeric source id"}
+        if not is_allowed(allowlist.get(wanted)):
+            return {"ok": False, "error": f"{wanted} is not an allowed source"}
+        target = await dialog_entity(wanted)
+        if target is None:
+            return {"ok": False, "error": f"no open Telegram chat for source {wanted}"}
+        chat_id = get_peer_id(target)
+    else:
+        return {"ok": False, "error": "chatId or sourceId is required"}
     text = request.get("text")
     if not isinstance(text, str) or not text.strip():
         return {"ok": False, "error": "text must be a non-empty string"}
@@ -523,7 +560,7 @@ async def send_api(request):
     key = (source_id, text)
     sending_now.append(key)
     try:
-        sent = await client.send_message(chat_id, text, reply_to=reply_to)
+        sent = await client.send_message(target, text, reply_to=reply_to)
     except Exception as error:
         logger.error("Send to %s failed: %s", source_id, error)
         return {"ok": False, "error": f"Telegram refused the message: {error}"}
