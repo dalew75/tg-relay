@@ -5,6 +5,7 @@ import json
 from pprint import pformat
 import re
 import time
+from collections import deque
 from pathlib import Path
 
 from allowlist import (
@@ -47,6 +48,12 @@ nats_client = None
 my_id = None
 mgmt_group_id = None
 mgmt_group_entity = None
+# (source_id, message id) of messages sent through the Send API; their outgoing echo is not published again
+SENT_KEEP = 500
+sent_via_api = deque(maxlen=SENT_KEEP)
+MAX_SEND_CHARS = 4096
+# (source_id, text) while a Send API message is in flight: its echo can arrive before send_message returns
+sending_now = []
 
 
 async def resolve_mgmt_group(raw: str):
@@ -80,6 +87,7 @@ async def setup():
 
     allowlist.update(load_store(Path(config.ALLOWLIST_PATH)))
     await nats_client.subscribe(config.SOURCES_SUBJECT, cb=handle_sources_request)
+    await nats_client.subscribe(config.SEND_SUBJECT, cb=handle_send_request)
 
     for x in config.RELAY_MAP.split(','):
         if not x:
@@ -493,6 +501,55 @@ async def handle_sources_request(msg):
             logger.error("Unable to answer sources request: %s", error)
 
 
+async def send_api(request):
+    """Sends `text` as the relay account to an allowed source (`chatId`: the realChatId the relay publishes)."""
+    try:
+        chat_id = int(str(request.get("chatId")).strip())
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "chatId must be a numeric Telegram chat id"}
+    text = request.get("text")
+    if not isinstance(text, str) or not text.strip():
+        return {"ok": False, "error": "text must be a non-empty string"}
+    if len(text) > MAX_SEND_CHARS:
+        return {"ok": False, "error": f"text is longer than {MAX_SEND_CHARS} characters"}
+    reply_to = request.get("replyTo")
+    if reply_to is not None and not isinstance(reply_to, int):
+        return {"ok": False, "error": "replyTo must be a message id"}
+    source_id = source_id_from_chat_id(chat_id)
+    if mgmt_group_id is not None and source_id == mgmt_group_id:
+        return {"ok": False, "error": "MGMT_GROUP is never written to through the Send API"}
+    if not is_allowed(allowlist.get(source_id)):
+        return {"ok": False, "error": f"{source_id} is not an allowed source"}
+    key = (source_id, text)
+    sending_now.append(key)
+    try:
+        sent = await client.send_message(chat_id, text, reply_to=reply_to)
+    except Exception as error:
+        logger.error("Send to %s failed: %s", source_id, error)
+        return {"ok": False, "error": f"Telegram refused the message: {error}"}
+    finally:
+        sending_now.remove(key)
+    sent_via_api.append((source_id, sent.id))
+    logger.info("Sent message %s to %s via the Send API", sent.id, source_id)
+    return {"ok": True, "messageId": sent.id, "chatId": chat_id}
+
+
+async def handle_send_request(msg):
+    try:
+        request = json.loads(msg.data.decode() or "{}")
+        if not isinstance(request, dict):
+            raise ValueError("request must be a JSON object")
+        response = await send_api(request)
+    except Exception as error:
+        logger.error("Send request failed: %s", error)
+        response = {"ok": False, "error": str(error)}
+    if msg.reply:
+        try:
+            await msg.respond(json.dumps(response).encode())
+        except Exception as error:
+            logger.error("Unable to answer send request: %s", error)
+
+
 async def command_target(event, args):
     if event.message.is_reply:
         reply = await event.message.get_reply_message()
@@ -588,6 +645,12 @@ async def my_event_handler(event):
 
     source_id = source_id_from_chat_id(event.chat_id)
     if mgmt_group_id is not None and source_id == mgmt_group_id:
+        return
+    if event.out and (
+        (source_id, event.message.id) in sent_via_api
+        or (source_id, event.message.message) in sending_now
+    ):
+        # Sent through the Send API: the sender (e.g. the portal) already stored its own copy.
         return
 
     await log_unseen_source(event, source_id)

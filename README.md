@@ -43,6 +43,7 @@ Common optional variables:
 | `FORWARD` | `True` | Legacy forwarding for unmapped messages via `default` destinations |
 | `SOURCES_SUBJECT` | `tg-relay.sources` | NATS request/reply subject of the [Sources API](#sources-api) |
 | `SOURCES_EVENT_SUBJECT` | `tg-relay.sources.event` | Where every allowlist change is announced |
+| `SEND_SUBJECT` | `tg-relay.send` | NATS request/reply subject of the [Send API](#send-api) |
 
 Why do I have to register an App?
 ---------------------------------
@@ -246,6 +247,26 @@ published on `SOURCES_EVENT_SUBJECT` as `{"op": "changed", "id", "source"}` or
 ```sh
 nats req tg-relay.sources '{"op":"list","status":"pending"}'
 ```
+
+Send API <a name="send-api"></a>
+-------------------------------
+
+The relay also answers NATS requests on `SEND_SUBJECT` (default `tg-relay.send`)
+by sending a message **as the relay account** (you), so other apps (the portal's
+Chats tab, for chats imported from Telegram) can reply in the real chat:
+
+```sh
+nats req tg-relay.send '{"chatId": "-1001234567890", "text": "hi from the portal"}'
+```
+
+- `chatId` is the `realChatId` the relay publishes (a number or a numeric string).
+- `text` is required, up to 4096 characters. `replyTo` (a message id) is optional.
+- Only `allowed` sources can be written to; `MGMT_GROUP` is refused.
+- Reply: `{"ok": true, "messageId": 42, "chatId": ...}` or `{"ok": false, "error": "..."}`
+  (Telegram errors such as flood waits come back as the error text).
+
+Messages sent this way are **not** published again when `RELAY_OUTGOING=true`
+echoes them: the app that sent them stores its own copy.
 
 List Channels <a name="listchannels"></a>
 -----------------------------------------

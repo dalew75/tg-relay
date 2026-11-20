@@ -11,7 +11,7 @@ This is not a Telegram bot. Changes that touch runtime behavior usually need Tel
 - `relay.py` is the main process and Docker entrypoint.
   1. Imports `config.py`, constructs `TelegramClient(config.SESSION_NAME, config.API_ID, config.API_HASH)`, and calls `client.start()` at module import/startup.
   2. `setup()` connects a module-global `nats_client` to `config.NATS_SERVER`, optionally using `NATS_USER`/`NATS_PASS`.
-  3. `setup()` loads the persisted allowlist from `config.ALLOWLIST_PATH` via `allowlist.load_store()` and subscribes `handle_sources_request` to `config.SOURCES_SUBJECT` (the Sources API: `list` / `allow` / `deny` / `reset` request/reply, see README).
+  3. `setup()` loads the persisted allowlist from `config.ALLOWLIST_PATH` via `allowlist.load_store()` and subscribes `handle_sources_request` to `config.SOURCES_SUBJECT` (the Sources API: `list` / `allow` / `deny` / `reset` request/reply, see README), and `handle_send_request` to `config.SEND_SUBJECT` (the Send API: `send_api()` sends `{chatId, text, replyTo?}` as the relay account to an `allowed` source and records `(source_id, message id)` in `sent_via_api`, plus `(source_id, text)` in `sending_now` while in flight, so the `RELAY_OUTGOING` echo of that message is not published; the sender, e.g. the portal, stores its own copy).
   4. `setup()` parses `config.RELAY_MAP` into the module-global `RELAY_MAP` and seeds any missing keys into the in-memory allowlist with `kind="env"`.
   5. `@client.on(events.NewMessage)` registers `my_event_handler(event)`.
   6. Outgoing messages from the relay account are checked for `/allow`, `/remove`, `/disallow`, `/reset`, and `/list` via `allowlist.parse_command()` and `handle_command()`. Non-command outgoing messages are dropped unless `RELAY_OUTGOING=True`, in which case they continue to step 7 (they never create `pending` entries, but the first one per unseen source is logged with the `/allow` hint).
@@ -106,7 +106,7 @@ staging future commits; do not commit runtime changes with stale documentation.
 
 - `config.py` — authoritative config surface:
   - Required: `API_ID`, `API_HASH`, `RELAY_MAP`, `NATS_SERVER`.
-  - Defaults: `FORWARD=True`, `SESSION_NAME='session'`, `NATS_SUBJECT='telegram-messages'`, `NATS_USER=''`, `NATS_PASS=''`, `ALLOWLIST_PATH='data/allowlist.json'`, `MGMT_GROUP=''`, `MGMT_NOTIFY=False`, `RELAY_OUTGOING=False`, `SOURCES_SUBJECT='tg-relay.sources'`, `SOURCES_EVENT_SUBJECT='tg-relay.sources.event'`.
+  - Defaults: `FORWARD=True`, `SESSION_NAME='session'`, `NATS_SUBJECT='telegram-messages'`, `NATS_USER=''`, `NATS_PASS=''`, `ALLOWLIST_PATH='data/allowlist.json'`, `MGMT_GROUP=''`, `MGMT_NOTIFY=False`, `RELAY_OUTGOING=False`, `SOURCES_SUBJECT='tg-relay.sources'`, `SOURCES_EVENT_SUBJECT='tg-relay.sources.event'`, `SEND_SUBJECT='tg-relay.send'`.
 - `relay.py` — key functions:
   - `setup()` connects NATS, loads allowlist, and seeds `RELAY_MAP` into allowlist.
   - `get_real_chat_id(chat)` normalizes Telethon peer IDs.
@@ -173,3 +173,7 @@ python -m py_compile relay.py allowlist.py youtube-transcripts.py config.py list
 ## Future work (low priority)
 
 - **MGMT_GROUP notification flooding:** `MGMT_NOTIFY` defaults off because failed Telegram posts previously retried on every message from the same unknown source. A future fix should add per-source rate limits, digest/batch pending notifications, exponential backoff on send failures, and clearer operator controls before re-enabling broadcast notify by default.
+
+## Git: commit and push (always do this)
+
+When a change is done (and its checks pass), commit it on `master` with a Conventional Commit subject and push to `origin` without asking (user decision, 2026-11-20). Don't commit env files, sessions or `data/`.
