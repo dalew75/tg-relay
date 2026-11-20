@@ -44,6 +44,8 @@ Common optional variables:
 | `SOURCES_SUBJECT` | `tg-relay.sources` | NATS request/reply subject of the [Sources API](#sources-api) |
 | `SOURCES_EVENT_SUBJECT` | `tg-relay.sources.event` | Where every allowlist change is announced |
 | `SEND_SUBJECT` | `tg-relay.send` | NATS request/reply subject of the [Send API](#send-api) |
+| `REACT_SUBJECT` | `tg-relay.react` | NATS request/reply subject of the [React API](#react-api) |
+| `REACTIONS_SUBJECT` | `telegram-reactions` | Where reaction counts on messages in allowed sources are published |
 
 Why do I have to register an App?
 ---------------------------------
@@ -269,6 +271,35 @@ nats req tg-relay.send '{"chatId": "-1001234567890", "text": "hi from the portal
 
 Messages sent this way are **not** published again when `RELAY_OUTGOING=true`
 echoes them: the app that sent them stores its own copy.
+
+React API and reactions <a name="react-api"></a>
+-----------------------------------------------
+
+`REACT_SUBJECT` (default `tg-relay.react`) sets **your** (the relay account's)
+emoji reactions on one message in an allowed source:
+
+```sh
+nats req tg-relay.react '{"chatId": "-1001234567890", "messageId": 42, "emojis": ["👍"]}'
+```
+
+- `emojis` replaces your reactions on that message; `[]` removes them.
+- Without Telegram Premium only one reaction per message is allowed: when
+  Telegram refuses the set, the relay retries with only the last emoji.
+- Reply: `{"ok": true, "applied": ["👍"]}` or `{"ok": false, "error": "..."}`
+  (e.g. a reaction the chat doesn't allow).
+
+Whenever Telegram reports a reaction change on a message in an allowed source
+(anyone's, yours included), the relay publishes on `REACTIONS_SUBJECT`
+(default `telegram-reactions`):
+
+```json
+{"chatId": 1234567890, "realChatId": -1001234567890, "messageId": 42,
+ "reactions": [{"emoji": "👍", "count": 3, "mine": true}]}
+```
+
+`mine` marks a reaction that includes yours. Custom-emoji and paid reactions
+are left out. Telegram only pushes these updates for chats the account gets
+updates for: private chats and your own messages reliably, busy groups may not.
 
 List Channels <a name="listchannels"></a>
 -----------------------------------------

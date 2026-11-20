@@ -27,7 +27,8 @@ from allowlist import (
     source_record,
 )
 
-from telethon import TelegramClient, events
+from telethon import TelegramClient, events, functions, types
+from telethon.errors import RPCError
 from telethon.utils import get_peer_id
 import nats
 import config
@@ -89,6 +90,7 @@ async def setup():
     allowlist.update(load_store(Path(config.ALLOWLIST_PATH)))
     await nats_client.subscribe(config.SOURCES_SUBJECT, cb=handle_sources_request)
     await nats_client.subscribe(config.SEND_SUBJECT, cb=handle_send_request)
+    await nats_client.subscribe(config.REACT_SUBJECT, cb=handle_react_request)
 
     for x in config.RELAY_MAP.split(','):
         if not x:
@@ -585,6 +587,117 @@ async def handle_send_request(msg):
             await msg.respond(json.dumps(response).encode())
         except Exception as error:
             logger.error("Unable to answer send request: %s", error)
+
+
+MAX_REACTION_CHARS = 16
+# Telegram refuses more than one reaction per message without Premium: fall back to the newest one
+TOO_MANY_REACTIONS = ("REACTIONS_TOO_MANY", "PREMIUM_ACCOUNT_REQUIRED", "REACTIONS_COUNT")
+
+
+async def react_target(chat_id):
+    """The allowed chat behind a real chat id, or an error string."""
+    source_id = source_id_from_chat_id(chat_id)
+    if mgmt_group_id is not None and source_id == mgmt_group_id:
+        return None, "MGMT_GROUP is never written to through the React API"
+    if not is_allowed(allowlist.get(source_id)):
+        return None, f"{source_id} is not an allowed source"
+    return source_id, None
+
+
+async def react_api(request):
+    """Sets the relay account's reactions on one message: `{chatId, messageId, emojis}` (replaces them; `[]` clears).
+    Without Premium Telegram takes one reaction per message, so a refused set is retried with only the newest."""
+    try:
+        chat_id = int(str(request.get("chatId")).strip())
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "chatId must be a numeric Telegram chat id"}
+    message_id = request.get("messageId")
+    if isinstance(message_id, str) and message_id.isdigit():
+        message_id = int(message_id)
+    if not isinstance(message_id, int) or isinstance(message_id, bool) or message_id <= 0:
+        return {"ok": False, "error": "messageId must be a Telegram message id"}
+    emojis = request.get("emojis")
+    if not isinstance(emojis, list) or not all(isinstance(e, str) and 0 < len(e) <= MAX_REACTION_CHARS for e in emojis):
+        return {"ok": False, "error": "emojis must be a list of emoji"}
+    emojis = list(dict.fromkeys(emojis))
+    _, error = await react_target(chat_id)
+    if error:
+        return {"ok": False, "error": error}
+
+    async def send(chosen):
+        await client(functions.messages.SendReactionRequest(
+            peer=chat_id, msg_id=message_id, reaction=[types.ReactionEmoji(emoticon=e) for e in chosen],
+        ))
+
+    try:
+        await send(emojis)
+        applied = emojis
+    except RPCError as error:
+        if len(emojis) > 1 and any(code in str(error) for code in TOO_MANY_REACTIONS):
+            try:
+                await send(emojis[-1:])
+                applied = emojis[-1:]
+            except Exception as retry_error:
+                return {"ok": False, "error": f"Telegram refused the reaction: {retry_error}"}
+        else:
+            return {"ok": False, "error": f"Telegram refused the reaction: {error}"}
+    except Exception as error:
+        logger.error("React on %s/%s failed: %s", chat_id, message_id, error)
+        return {"ok": False, "error": f"Telegram refused the reaction: {error}"}
+    logger.info("Reacted %s on message %s in %s via the React API", applied, message_id, chat_id)
+    return {"ok": True, "applied": applied}
+
+
+async def handle_react_request(msg):
+    try:
+        request = json.loads(msg.data.decode() or "{}")
+        if not isinstance(request, dict):
+            raise ValueError("request must be a JSON object")
+        response = await react_api(request)
+    except Exception as error:
+        logger.error("React request failed: %s", error)
+        response = {"ok": False, "error": str(error)}
+    if msg.reply:
+        try:
+            await msg.respond(json.dumps(response).encode())
+        except Exception as error:
+            logger.error("Unable to answer react request: %s", error)
+
+
+def reaction_counts(reactions):
+    """Telegram's `MessageReactions` as `[{emoji, count, mine}]` (plain emoji only; custom / paid ones skipped)."""
+    out = []
+    for result in getattr(reactions, "results", None) or []:
+        reaction = getattr(result, "reaction", None)
+        if not isinstance(reaction, types.ReactionEmoji):
+            continue
+        out.append({
+            "emoji": reaction.emoticon,
+            "count": int(result.count or 0),
+            "mine": getattr(result, "chosen_order", None) is not None,
+        })
+    return out
+
+
+@client.on(events.Raw(types.UpdateMessageReactions))
+async def reactions_handler(update):
+    """Someone (or you, elsewhere) reacted in an allowed chat: publish the message's reaction counts."""
+    try:
+        real_chat_id = get_peer_id(update.peer)
+        source_id = source_id_from_chat_id(real_chat_id)
+        if mgmt_group_id is not None and source_id == mgmt_group_id:
+            return
+        if not is_allowed(allowlist.get(source_id)):
+            return
+        payload = {
+            "chatId": source_id,
+            "realChatId": real_chat_id,
+            "messageId": update.msg_id,
+            "reactions": reaction_counts(update.reactions),
+        }
+        await nats_client.publish(config.REACTIONS_SUBJECT, json.dumps(payload).encode())
+    except Exception as error:
+        logger.error("Unable to publish reactions: %s", error)
 
 
 async def command_target(event, args):
