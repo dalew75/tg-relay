@@ -204,7 +204,10 @@ NATS payload
 ------------
 
 For each allowlisted source, each message is published as JSON to `NATS_SUBJECT`
-(default `telegram-messages`). Core fields:
+(default `telegram-messages`). On this machine it is set to **`telegram-chat-data`**, the subject the
+`telegram-chat-data` service in `../subscriptions` reads: it stores the message, replies when asked, and republishes it
+as `message.received` (platform `telegram`) for notification-triage and the portal. Reaction counts on
+`REACTIONS_SUBJECT` (`telegram-reactions`) go to the same subscriptions service. Core fields:
 
 - `chatId`, `realChatId`, `channelName`, `messageId`, `message`, `messageLink`
 - `userId`, `username`, `displayName` — the sender is resolved via Telegram if not cached, so `username` is filled for first-time senders; it is `null` only when the account has no public @handle. `displayName` is first + last name (or channel title) and is always set when the sender resolves
