@@ -92,7 +92,7 @@ staging future commits; do not commit runtime changes with stale documentation.
 - Style is plain Python scripts, not a package: module-level functions, module-level clients, and mutable globals (`client`, `nats_client`, `RELAY_MAP`, `allowlist`, `runtime_ids`).
 - Names are mostly `snake_case` for functions (`get_real_chat_id`, `handle_command`, `save_runtime_sources`). Some locals and NATS fields use camelCase (`channelName`, `contractAddress`); prefer existing local style when making narrow edits, but use `snake_case` for new helpers.
 - Four-space indentation. No project formatter is configured; keep diffs minimal and avoid broad restyling.
-- Logging pattern: `logging.basicConfig(level=logging.INFO)` plus `logger = logging.getLogger(__name__)`; operational failures are logged with `logger.error(...)`/`logger.warning(...)`.
+- Logging pattern: `logging.basicConfig(level=logging.INFO)` plus `logger = logging.getLogger(__name__)`; operational failures are logged with `logger.error(...)`/`logger.warning(...)`. **Never log message text** (pm2 keeps logs on disk): a relayed message logs `Relayed message <id> from <source> to <destination> (N chars)`; only `DEBUG=1` adds the text.
 - Async pattern: long-running processes use `asyncio`, Telethon callbacks, and `nats-py` async publish/subscribe. Avoid blocking calls in new async paths; existing `youtube-transcripts.py` currently performs `requests`, transcript fetching, and file I/O inline in the event loop.
 - Error handling differs by script:
   - `relay.py` catches allowlist save failures and entity lookup failures in command helpers; setup, parsing, and publish failures can still propagate.

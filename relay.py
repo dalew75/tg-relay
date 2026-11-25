@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 import asyncio
 import logging
+import os
 import json
 from pprint import pformat
 import re
@@ -35,6 +36,8 @@ import config
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+# Message text stays out of the logs (pm2 keeps them on disk); DEBUG=1 logs it
+DEBUG = os.environ.get('DEBUG', '').strip() not in ('', '0', 'false')
 
 client = TelegramClient(config.SESSION_NAME, config.API_ID, config.API_HASH)
 client.start()
@@ -818,8 +821,6 @@ async def my_event_handler(event):
         if user_id is None and event.out:
             user_id = my_id
         for channelName in entry["destinations"]:
-            logger.info(f'Channel: {channelName}')
-            logger.info(f'Message: {event.message.message}')
             contractAddress = extract_ca(event.message.message)
             is_tradeable = bool(re.search(r"pump\.fun", event.message.message, re.IGNORECASE))
             message = {
@@ -841,8 +842,16 @@ async def my_event_handler(event):
             await nats_client.publish(
                 config.NATS_SUBJECT, json.dumps(message).encode()
             )
-            logger.info(contractAddress)
-            logger.info(event.message.message)
+            logger.info(
+                "Relayed message %s from %s to %s (%d chars%s)",
+                event.message.id,
+                source_id,
+                channelName,
+                len(event.message.message or ''),
+                f", CA {contractAddress}" if contractAddress else "",
+            )
+            if DEBUG:
+                logger.info("Message text: %s", event.message.message)
         return
 
     if is_pending(entry) or event.out:

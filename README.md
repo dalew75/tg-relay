@@ -40,6 +40,7 @@ Common optional variables:
 | `MGMT_GROUP` | *(empty)* | `source_id:label` for the management group used when `MGMT_NOTIFY=True` |
 | `MGMT_NOTIFY` | `False` | Post pending-approval notifications to `MGMT_GROUP` (off by default) |
 | `RELAY_OUTGOING` | `False` | Also publish messages sent by the relay account itself in allowed sources (commands are never published) |
+| `DEBUG` | unset | `1` also logs each relayed message's text. Without it the log holds only the message id, source, destination and length |
 | `FORWARD` | `True` | Legacy forwarding for unmapped messages via `default` destinations |
 | `SOURCES_SUBJECT` | `tg-relay.sources` | NATS request/reply subject of the [Sources API](#sources-api) |
 | `SOURCES_EVENT_SUBJECT` | `tg-relay.sources.event` | Where every allowlist change is announced |
